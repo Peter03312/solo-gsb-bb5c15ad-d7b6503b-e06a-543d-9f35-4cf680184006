@@ -18,6 +18,7 @@ const {
 const { buildSnapshot, performMove, forkSession, loadLineage, computeTotalScore } = require('./session');
 const { buildCoverageReport } = require('./coverage');
 const roomOps = require('./room');
+const taskOps = require('./task');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'app.db');
@@ -238,6 +239,16 @@ app.post('/api/scenarios/:id/publish', (req, res) => {
 
 // ---------- 学员：版本与会话 ----------
 
+// 任务会话访问守卫：会话属于训练任务时，必须出示该学员的个人参与凭证
+// （query 参数 token、请求体 token 或 x-task-token 请求头）。
+function taskSessionAllowed(req, session) {
+  if (!session.task_id) return true;
+  const token = req.query.token || (req.body && req.body.token) || req.get('x-task-token');
+  if (!token) return false;
+  const trainee = db.prepare('SELECT token FROM task_trainees WHERE id = ?').get(session.task_trainee_id);
+  return !!trainee && trainee.token === token;
+}
+
 // 学员可见的已发布情境
 app.get('/api/published', (req, res) => {
   const rows = db.prepare(`
@@ -282,12 +293,15 @@ app.post('/api/sessions', (req, res) => {
 });
 
 // 会话列表（便于恢复；总分按各自绑定版本的冻结规则与已完成路径实时计算）
+// 训练任务的尝试会话不在普通列表出现（只能凭本人参与凭证经任务入口访问），
+// 防止普通列表/入口绕过任务权限与次数限制。
 app.get('/api/sessions', (req, res) => {
   const rows = db.prepare(`
     SELECT se.code, se.scenario_id, s.title AS scenario_title, se.version, se.status,
            se.step_no, se.trainee_name, se.current_node_id, se.created_at, se.updated_at,
            se.parent_code, se.fork_step_no, se.root_code, se.room_code, se.path
       FROM sessions se JOIN scenarios s ON s.id = se.scenario_id
+     WHERE se.task_id IS NULL
      ORDER BY se.updated_at DESC LIMIT 200
   `).all();
   const contentCache = new Map();
@@ -312,10 +326,17 @@ app.get('/api/sessions', (req, res) => {
   }));
 });
 
-// 查询会话现状
+// 查询会话现状。任务会话（属于训练任务的某次尝试）必须出示本人参与凭证
+// （query 参数 token 或 x-task-token 请求头），否则 401 且不返回任何会话信息。
 app.get('/api/sessions/:code', (req, res) => {
   const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(req.params.code);
   if (!session) return res.status(404).json({ error: '会话不存在' });
+  if (!taskSessionAllowed(req, session)) {
+    return res.status(401).json({
+      error: '该会话属于训练任务，只能凭本人参与凭证查看（请经任务入口访问）',
+      errorCode: 'TASK_TOKEN_INVALID',
+    });
+  }
   const versionRow = db.prepare('SELECT content FROM versions WHERE scenario_id = ? AND version = ?')
     .get(session.scenario_id, session.version);
   if (!versionRow) return res.status(500).json({ error: '版本内容缺失' });
@@ -327,13 +348,13 @@ app.get('/api/sessions/:code', (req, res) => {
   });
 });
 
-// 执行一步选择（携带当前步号）
+// 执行一步选择（携带当前步号）。任务会话须在请求体携带本人参与凭证 token。
 app.post('/api/sessions/:code/move', (req, res) => {
-  const { optionId, stepNo, traineeName } = req.body || {};
+  const { optionId, stepNo, traineeName, token } = req.body || {};
   if (typeof optionId !== 'string') return res.status(400).json({ error: '缺少 optionId' });
   if (!Number.isInteger(stepNo)) return res.status(400).json({ error: '缺少或非法的 stepNo（必须为整数）' });
 
-  const result = performMove(db, { code: req.params.code, optionId, stepNo, traineeName });
+  const result = performMove(db, { code: req.params.code, optionId, stepNo, traineeName, taskToken: token || null });
   if (!result.ok) {
     return res.status(result.status).json({
       error: result.error,
@@ -375,6 +396,15 @@ app.post('/api/sessions/:code/fork', (req, res) => {
     return res.status(400).json({ error: '缺少或非法的 observedStepNo（所见源当前步号必须为整数）' });
   }
 
+  // 训练任务的尝试会话不得分叉：分支会绕开任务权限与次数限制
+  const srcRow = db.prepare('SELECT task_id FROM sessions WHERE code = ?').get(req.params.code);
+  if (srcRow && srcRow.task_id) {
+    return res.status(409).json({
+      error: '该会话属于训练任务的计次尝试，不能复盘分叉（未创建分支）',
+      errorCode: 'TASK_SESSION_FORK_FORBIDDEN',
+    });
+  }
+
   // 会话码随机碰撞时极小概率重试
   for (let attempt = 0; attempt < 3; attempt++) {
     const newCode = newSessionCode();
@@ -409,8 +439,15 @@ app.post('/api/sessions/:code/fork', (req, res) => {
 });
 
 // 来源与分支对照：返回同一家族（root_code）下原始会话与全部分支的树，
-// 每个节点携带来源、分歧步与各自完整后续路径。
+// 每个节点携带来源、分歧步与各自完整后续路径。任务会话同样须凭本人参与凭证查看。
 app.get('/api/sessions/:code/lineage', (req, res) => {
+  const row = db.prepare('SELECT task_id, task_trainee_id FROM sessions WHERE code = ?').get(req.params.code);
+  if (row && row.task_id && !taskSessionAllowed(req, row)) {
+    return res.status(401).json({
+      error: '该会话属于训练任务，只能凭本人参与凭证查看（请经任务入口访问）',
+      errorCode: 'TASK_TOKEN_INVALID',
+    });
+  }
   const result = loadLineage(db, req.params.code);
   if (!result.ok) return res.status(result.status).json({ error: result.error });
   res.json({ ok: true, rootCode: result.rootCode, requestedCode: result.requestedCode, tree: result.tree });
@@ -566,6 +603,136 @@ app.post('/api/rooms/:code/reopen', (req, res) => {
     });
   }
   res.json({ ok: true, reopened: result.reopened, current: result.snapshot });
+});
+
+// ---------- 训练任务（培训师建任务 / 学员凭个人凭证演练 / 培训师凭管理凭证看成绩） ----------
+
+// 建立训练任务（培训师）：{scenarioId, version?, deadline, maxAttempts, passScore, trainees}。
+// version 缺省为当前最新发布版；任务绑定该冻结版本，后续发布新版本不改变本任务规则。
+// deadline 为 epoch 毫秒或 ISO-8601 时间串，必须晚于当前时间；maxAttempts 为正整数；
+// passScore 为整数；trainees 为非空姓名数组且姓名不重复。任何一项非法都整次拒绝（不写库）。
+// 成功返回任务编号、管理凭证与每名学员的独立参与凭证（201）。
+app.post('/api/tasks', (req, res) => {
+  const { scenarioId, version, deadline, maxAttempts, passScore, trainees } = req.body || {};
+  if (!scenarioId) return res.status(400).json({ error: '缺少 scenarioId' });
+  const result = taskOps.createTask(db, { scenarioId, version, deadline, maxAttempts, passScore, trainees });
+  if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
+  res.status(201).json({
+    ok: true,
+    taskId: result.task.id,
+    adminToken: result.adminToken, // 管理凭证，请妥善保存
+    ...taskOps.publicMeta(db, result.task),
+    trainees: result.trainees, // [{name, token}] 各学员的独立参与凭证，请分发给本人
+    note: '任务已绑定所选冻结版本，后续发布新版本不影响本任务规则；'
+        + '学员凭「任务编号 + 本人参与凭证」开始或续做演练：有未结束尝试时重复开始返回原会话，'
+        + '结束后才消耗下一次；截止后不能开新尝试但可续做旧会话。',
+  });
+});
+
+// 最近任务列表（元信息；不含任何凭证与成绩）
+app.get('/api/tasks', (req, res) => {
+  res.json(taskOps.listTasks(db));
+});
+
+// 任务公开元信息（供参与页确认任务；不含凭证、名单与成绩）
+app.get('/api/tasks/:id', (req, res) => {
+  const task = taskOps.getTask(db, req.params.id);
+  if (!task) return res.status(404).json({ error: '训练任务不存在', errorCode: 'TASK_NOT_FOUND' });
+  res.json({ ok: true, task: taskOps.publicMeta(db, task) });
+});
+
+// 学员开始或续做：{token}。有未结束尝试返回原会话（200，resumed=true，不消耗次数）；
+// 否则新建一次尝试（201，消耗一次）；次数耗尽 / 已过截止 / 凭证无效均明确反馈且不多建会话。
+app.post('/api/tasks/:id/start', (req, res) => {
+  const { token } = req.body || {};
+  if (typeof token !== 'string' || !token) {
+    return res.status(400).json({ error: '缺少 token（个人参与凭证）', errorCode: 'TASK_TOKEN_REQUIRED' });
+  }
+  const result = taskOps.startAttempt(db, { taskId: req.params.id, token });
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      task: result.task || null,
+      attemptsUsed: result.attemptsUsed ?? null,
+    });
+  }
+  res.status(result.resumed ? 200 : 201).json({
+    ok: true,
+    resumed: result.resumed,
+    task: result.task,
+    traineeName: result.traineeName,
+    attemptNo: result.attemptNo,
+    maxAttempts: result.maxAttempts,
+    attemptsUsed: result.attemptsUsed,
+    attemptsLeft: result.attemptsLeft,
+    session: result.session,
+  });
+});
+
+// 学员视角：我的尝试记录与进行中的会话（?token= 或 x-task-token 请求头）
+app.get('/api/tasks/:id/my', (req, res) => {
+  const token = req.query.token || req.get('x-task-token');
+  const result = taskOps.getMine(db, { taskId: req.params.id, token });
+  if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
+  res.json({
+    ok: true,
+    task: result.task,
+    traineeName: result.traineeName,
+    maxAttempts: result.maxAttempts,
+    attemptsUsed: result.attemptsUsed,
+    attemptsLeft: result.attemptsLeft,
+    attempts: result.attempts,
+    active: result.active,
+  });
+});
+
+// 学员在任务会话中执行一步选择：{token, optionId, stepNo}。
+// 只能推进本人“进行中”的那次尝试；选项条件、步号与计分规则完全沿用任务冻结版本。
+app.post('/api/tasks/:id/move', (req, res) => {
+  const { token, optionId, stepNo } = req.body || {};
+  if (typeof token !== 'string' || !token) {
+    return res.status(400).json({ error: '缺少 token（个人参与凭证）', errorCode: 'TASK_TOKEN_REQUIRED' });
+  }
+  if (typeof optionId !== 'string') return res.status(400).json({ error: '缺少 optionId' });
+  if (!Number.isInteger(stepNo)) return res.status(400).json({ error: '缺少或非法的 stepNo（必须为整数）' });
+  const result = taskOps.taskMove(db, { taskId: req.params.id, token, optionId, stepNo });
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      current: result.current || null,
+    });
+  }
+  const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(result.session.scenario_id);
+  const snapshot = buildSnapshot(result.content, result.session, result.session.scenario_id, result.session.version);
+  const last = snapshot.path.find((p) => p.step === result.session.step_no) || null;
+  res.json({
+    ok: true,
+    ...snapshot,
+    scenarioTitle: sc ? sc.title : null,
+    task: taskOps.publicMeta(db, result.task),
+    attemptNo: result.attemptNo,
+    attemptsUsed: result.attemptsUsed,
+    attemptsLeft: result.attemptsLeft,
+    lastMove: last ? {
+      step: last.step,
+      optionId: last.optionId,
+      optionLabel: last.optionLabel,
+      score: last.score,
+      scoreNote: last.scoreNote,
+      totalScore: snapshot.totalScore,
+    } : null,
+  });
+});
+
+// 培训师凭管理凭证查看成绩：各人尝试记录、最高已结束总分、是否达到及格分
+// （?token= 或 x-admin-token 请求头）。无已结束尝试时 bestScore/passed 为 null（成绩为空）。
+app.get('/api/tasks/:id/manage', (req, res) => {
+  const token = req.query.token || req.get('x-admin-token');
+  const result = taskOps.manageReport(db, { taskId: req.params.id, adminToken: token });
+  if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
+  res.json({ ok: true, task: result.task, summary: result.summary, trainees: result.trainees });
 });
 
 // 兜底：未匹配的 /api 返回 JSON 404

@@ -54,8 +54,11 @@ $$('.tab').forEach((tab) => {
     $('#view-trainee').hidden = which !== 'trainee';
     $('#view-trainer').hidden = which !== 'trainer';
     $('#view-rooms').hidden = which !== 'rooms';
+    $('#view-tasks').hidden = which !== 'tasks';
+    leaveManageView();
     if (which === 'trainee') { loadPublished(); loadSessionList(); }
     if (which === 'rooms') { leaveRoomView(); loadRoomHome(); }
+    if (which === 'tasks') { loadTaskHome(); }
     if (which === 'trainer') {
       leaveRoomView();
       coverageCtx = null;
@@ -70,6 +73,8 @@ $$('.tab').forEach((tab) => {
 // ====================== 学员端 ======================
 
 let currentSession = null;
+// 会话上下文：{ kind:'normal' } 普通演练；{ kind:'task', taskId, token, task, attemptNo, ... } 训练任务的计次尝试
+let sessionCtx = { kind: 'normal' };
 
 async function loadPublished() {
   const list = await api('/api/published');
@@ -185,6 +190,18 @@ $('#btn-resume').addEventListener('click', async () => {
 });
 
 $('#btn-exit-session').addEventListener('click', () => {
+  if (sessionCtx.kind === 'task') {
+    // 任务会话：返回训练任务页，并刷新“我的尝试”
+    const { taskId, token } = sessionCtx;
+    sessionCtx = { kind: 'normal' };
+    currentSession = null;
+    $('#trainee-session').hidden = true;
+    $('#view-trainee').hidden = true;
+    $('#view-tasks').hidden = false;
+    loadTaskHome();
+    refreshMyTaskSummary(taskId, token);
+    return;
+  }
   currentSession = null;
   $('#trainee-session').hidden = true;
   $('#trainee-home').hidden = false;
@@ -192,11 +209,38 @@ $('#btn-exit-session').addEventListener('click', () => {
 });
 
 function enterSession(snap) {
+  sessionCtx = { kind: 'normal' };
   currentSession = snap;
   $('#trainee-home').hidden = true;
   $('#trainee-session').hidden = false;
   hideBanner();
   renderSession();
+}
+
+// 训练任务：凭「任务编号 + 个人参与凭证」开始/续做后进入会话视图（复用学员会话界面）
+function enterTaskSession(r) {
+  sessionCtx = {
+    kind: 'task',
+    taskId: r.task.id,
+    token: r.__token,
+    task: r.task,
+    attemptNo: r.attemptNo,
+    maxAttempts: r.maxAttempts,
+    attemptsUsed: r.attemptsUsed,
+    attemptsLeft: r.attemptsLeft,
+  };
+  currentSession = { ...r.session, scenarioTitle: r.task.scenarioTitle };
+  $('#view-tasks').hidden = true;
+  $('#view-trainee').hidden = false;
+  $('#trainee-home').hidden = true;
+  $('#trainee-session').hidden = false;
+  hideBanner();
+  renderSession();
+  showBanner(
+    `${r.resumed ? '已回到你未完成的尝试（不额外消耗次数）' : `已开始第 ${r.attemptNo} 次尝试`}`
+    + `：本任务每人最多 ${r.maxAttempts} 次，你已用 ${r.attemptsUsed} 次；及格分 ${r.task.passScore}，`
+    + `截止 ${new Date(r.task.deadlineMs).toLocaleString('zh-CN', { hour12: false })}（截止后不能开新尝试，可续做未结束的会话）。`,
+    'info');
 }
 
 function hideBanner() {
@@ -214,6 +258,7 @@ function showBanner(msg, kind) {
 function renderSession() {
   const s = currentSession;
   if (!s) return;
+  const isTask = sessionCtx.kind === 'task';
   $('#ses-scenario-title').textContent = s.scenarioTitle || '';
   $('#ses-code').textContent = s.code;
   $('#ses-version').textContent = 'v' + s.version;
@@ -221,11 +266,13 @@ function renderSession() {
   $('#ses-score').textContent = s.totalScore;
   $('#ses-score').className = scoreClass(s.totalScore);
 
-  // 溯源标记
+  // 溯源标记 / 任务标记
   const lin = s.lineage || {};
-  $('#ses-lineage').innerHTML = lin.isBranch
-    ? ` · <span class="branch-flag" title="该会话是复盘分支">🌿 分支（源 <code data-lineage-jump="${esc(lin.parentCode)}">${esc(lin.parentCode)}</code> 的第 ${lin.forkStepNo} 步分叉）</span>`
-    : '';
+  $('#ses-lineage').innerHTML = isTask
+    ? ` · <span class="task-flag" title="训练任务的计次尝试，只能凭本人参与凭证操作">🎯 任务 <code>${esc(sessionCtx.taskId)}</code> · 第 ${sessionCtx.attemptNo}/${sessionCtx.maxAttempts} 次尝试 · 及格分 ${sessionCtx.task.passScore}</span>`
+    : (lin.isBranch
+      ? ` · <span class="branch-flag" title="该会话是复盘分支">🌿 分支（源 <code data-lineage-jump="${esc(lin.parentCode)}">${esc(lin.parentCode)}</code> 的第 ${lin.forkStepNo} 步分叉）</span>`
+      : '');
 
   const node = s.currentNode;
   $('#node-kick').textContent = node && node.isEnd ? '结局' : '当前情境';
@@ -243,7 +290,19 @@ function renderSession() {
   const optBox = $('#option-list');
   if (s.status === 'ended') {
     optBox.innerHTML = '<div class="muted">演练已结束。</div>';
-    showBanner(`演练结束：已到达结局「${node ? node.title : ''}」，共 ${s.stepNo} 步，总分 <b>${s.totalScore}</b> 分。${lin.isBranch ? '（本会话为复盘分支，可在右侧从更早的步骤再次分叉）' : '（可在右侧从历史步分叉复盘）'}`, 'ok');
+    if (isTask) {
+      const passScore = sessionCtx.task.passScore;
+      const passed = s.totalScore >= passScore;
+      showBanner(
+        `本次尝试结束：已到达结局「${node ? node.title : ''}」，共 ${s.stepNo} 步，总分 <b>${s.totalScore}</b> 分。`
+        + `${passed ? `✅ 已达到及格分 ${passScore}` : `❌ 未达到及格分 ${passScore}`}`
+        + `（第 ${sessionCtx.attemptNo}/${sessionCtx.maxAttempts} 次；任务按各人最高已结束总分判定，`
+        + (sessionCtx.attemptsLeft > 0 ? `还可再试 ${sessionCtx.attemptsLeft} 次` : '次数已用完')
+        + '）。返回任务页可继续。',
+        passed ? 'ok' : 'error');
+    } else {
+      showBanner(`演练结束：已到达结局「${node ? node.title : ''}」，共 ${s.stepNo} 步，总分 <b>${s.totalScore}</b> 分。${lin.isBranch ? '（本会话为复盘分支，可在右侧从更早的步骤再次分叉）' : '（可在右侧从历史步分叉复盘）'}`, 'ok');
+    }
   } else {
     const avail = s.availableOptions.map((o) => `
       <button class="option-btn" data-opt="${esc(o.id)}">
@@ -261,11 +320,19 @@ function renderSession() {
   // 路径
   $('#path-list').innerHTML = s.path.map((p) => renderPathItem(p, s)).join('');
 
-  // 复盘分叉：可选分歧步 0..当前步号（结局步即当前步会在服务端拒绝，这里直接禁选）
-  renderForkStepSelect(s);
-
-  // 来源与分支对照
-  loadLineageView(s.code);
+  // 任务会话不提供复盘分叉与家族对照（计次尝试不得分叉）；普通会话照常
+  const forkCard = document.querySelector('.fork-card');
+  if (forkCard) forkCard.style.display = isTask ? 'none' : '';
+  const lineageCard = $('#lineage-card');
+  if (lineageCard) lineageCard.style.display = isTask ? 'none' : '';
+  if (isTask) {
+    $('#lineage-box').innerHTML = '';
+  } else {
+    // 复盘分叉：可选分歧步 0..当前步号（结局步即当前步会在服务端拒绝，这里直接禁选）
+    renderForkStepSelect(s);
+    // 来源与分支对照
+    loadLineageView(s.code);
+  }
 }
 
 function scoreClass(v) {
@@ -325,15 +392,24 @@ $('#option-list').addEventListener('click', async (e) => {
   const optionId = btn.dataset.opt;
   // 防重复点击：以本地当前步号提交，服务器比对步号决定是否推进
   const stepNo = currentSession.stepNo;
+  const isTask = sessionCtx.kind === 'task';
+  // 任务会话只能凭本人参与凭证经任务入口推进；普通会话走单人入口
+  const url = isTask
+    ? `/api/tasks/${encodeURIComponent(sessionCtx.taskId)}/move`
+    : `/api/sessions/${currentSession.code}/move`;
+  const body = isTask ? { token: sessionCtx.token, optionId, stepNo } : { optionId, stepNo };
   try {
-    const snap = await api(`/api/sessions/${currentSession.code}/move`, {
-      method: 'POST',
-      body: { optionId, stepNo },
-    });
+    const snap = await api(url, { method: 'POST', body });
+    if (isTask) {
+      // 同步任务计数信息（次数/剩余），供结束横幅与元信息使用
+      sessionCtx.attemptsUsed = snap.attemptsUsed ?? sessionCtx.attemptsUsed;
+      sessionCtx.attemptsLeft = snap.attemptsLeft ?? sessionCtx.attemptsLeft;
+      if (snap.task) sessionCtx.task = snap.task;
+    }
     currentSession = snap;
     hideBanner();
     renderSession();
-    loadSessionList();
+    if (!isTask) loadSessionList();
     if (snap.lastMove) {
       const lm = snap.lastMove;
       const sign = lm.score > 0 ? '+' : '';
@@ -357,6 +433,7 @@ $('#option-list').addEventListener('click', async (e) => {
 
 $('#btn-fork').addEventListener('click', async () => {
   if (!currentSession) return;
+  if (sessionCtx.kind === 'task') return toast('训练任务的计次尝试不支持复盘分叉', 'err');
   const sel = $('#fork-step-select');
   const forkStepNo = parseInt(sel.value, 10);
   if (!Number.isInteger(forkStepNo)) return toast('请选择分歧步号');
@@ -1513,6 +1590,325 @@ $('#btn-reopen').addEventListener('click', async () => {
     roomBanner(`重开被拒绝：${esc(err.message)}`, 'error');
   }
 });
+
+// ====================== 训练任务 ======================
+
+// 任务凭证按任务编号存 localStorage：{ [taskId]: { adminToken?, token? } }
+function taskCreds() {
+  try { return JSON.parse(localStorage.getItem('taskCreds') || '{}'); } catch (_) { return {}; }
+}
+function saveTaskCred(taskId, patch) {
+  const all = taskCreds();
+  all[taskId] = { ...(all[taskId] || {}), ...patch };
+  localStorage.setItem('taskCreds', JSON.stringify(all));
+}
+function getTaskCred(taskId) {
+  return taskCreds()[taskId] || {};
+}
+
+function toLocalInputValue(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function loadTaskHome() {
+  leaveManageView();
+  $('#tasks-home').hidden = false;
+  $('#task-manage').hidden = true;
+  // 已发布情境供建立任务选择
+  try {
+    const list = await api('/api/published');
+    const sel = $('#task-scenario');
+    sel.innerHTML = list.length
+      ? list.map((s) => `<option value="${esc(s.id)}">${esc(s.title)}（当前 v${s.current_version}）</option>`).join('')
+      : '<option value="">（暂无已发布情境）</option>';
+    await loadTaskVersions();
+  } catch (err) { toast(err.message, 'err'); }
+  // 默认截止时间：当前 +2 小时
+  if (!$('#task-deadline').value) {
+    $('#task-deadline').value = toLocalInputValue(Date.now() + 2 * 3600 * 1000);
+  }
+  await loadTaskList();
+}
+
+async function loadTaskVersions() {
+  const id = $('#task-scenario').value;
+  const sel = $('#task-version');
+  if (!id) { sel.innerHTML = ''; return; }
+  try {
+    const detail = await api(`/api/scenarios/${encodeURIComponent(id)}`);
+    const versions = (detail.versions || []).slice().sort((a, b) => b.version - a.version);
+    sel.innerHTML = versions.map((v) =>
+      `<option value="${v.version}">v${v.version}（冻结于 ${fmtTime(v.created_at)}）</option>`).join('');
+  } catch (err) { sel.innerHTML = ''; }
+}
+
+$('#task-scenario').addEventListener('change', loadTaskVersions);
+$('#btn-reload-tasks').addEventListener('click', loadTaskHome);
+
+// ---------- 建立任务（培训师） ----------
+
+$('#btn-create-task').addEventListener('click', async () => {
+  const scenarioId = $('#task-scenario').value;
+  const version = parseInt($('#task-version').value, 10);
+  if (!scenarioId) return toast('请先选择已发布情境', 'err');
+  if (!Number.isInteger(version)) return toast('请选择冻结版本', 'err');
+  const deadlineVal = $('#task-deadline').value;
+  const deadlineMs = deadlineVal ? new Date(deadlineVal).getTime() : NaN;
+  if (!Number.isFinite(deadlineMs)) return toast('请填写截止时间', 'err');
+  if (deadlineMs <= Date.now()) return toast('截止时间必须晚于当前时间', 'err');
+  const maxAttempts = Number($('#task-max-attempts').value);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) return toast('每人最多尝试次数必须为正整数', 'err');
+  const passScore = Number($('#task-pass-score').value);
+  if (!Number.isInteger(passScore)) return toast('及格分必须为整数', 'err');
+  const trainees = $('#task-trainees').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!trainees.length) return toast('学员名单不能为空（每行一个姓名）', 'err');
+  if (new Set(trainees).size !== trainees.length) return toast('学员名单中有重复姓名', 'err');
+  try {
+    const r = await api('/api/tasks', {
+      method: 'POST',
+      body: { scenarioId, version, deadline: deadlineMs, maxAttempts, passScore, trainees },
+    });
+    saveTaskCred(r.taskId, { adminToken: r.adminToken });
+    $('#task-created').classList.remove('hidden');
+    $('#task-id-out').textContent = r.taskId;
+    $('#task-admin-out').textContent = r.adminToken;
+    $('#task-tokens-out').innerHTML = `
+      <div class="hint">各学员独立参与凭证（点击可复制，请分别发给本人）：</div>
+      ${r.trainees.map((t) => `
+        <div class="token-row">
+          <span class="token-name">${esc(t.name)}</span>
+          <code class="big-code" title="点击复制" data-copy="${esc(t.token)}">${esc(t.token)}</code>
+        </div>`).join('')}`;
+    toast(`任务已建立（绑定 v${r.version}，${r.trainees.length} 名学员），请分发任务编号与各学员凭证`, 'ok');
+    loadTaskList();
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+// 点击复制凭证
+$('#task-created').addEventListener('click', (e) => {
+  const el = e.target.closest('[data-copy]');
+  if (!el) return;
+  const text = el.dataset.copy;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('已复制参与凭证', 'ok')).catch(() => {});
+  }
+});
+
+$('#btn-enter-manage').addEventListener('click', () => {
+  const taskId = $('#task-id-out').textContent.trim();
+  const cred = getTaskCred(taskId);
+  if (taskId && cred.adminToken) enterManage(taskId, cred.adminToken);
+});
+
+$('#btn-open-manage').addEventListener('click', () => {
+  const taskId = $('#manage-task-id').value.trim();
+  const adminToken = $('#manage-admin-token').value.trim();
+  if (!taskId || !adminToken) return toast('请输入任务编号与管理凭证', 'err');
+  saveTaskCred(taskId, { adminToken });
+  enterManage(taskId, adminToken);
+});
+
+// ---------- 参与任务（学员） ----------
+
+$('#btn-join-task').addEventListener('click', async () => {
+  const taskId = $('#join-task-id').value.trim();
+  const token = $('#join-task-token').value.trim();
+  if (!taskId || !token) return toast('请输入任务编号与个人参与凭证', 'err');
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(taskId)}/start`, {
+      method: 'POST',
+      body: { token },
+    });
+    saveTaskCred(taskId, { token });
+    enterTaskSession({ ...r, __token: token });
+    toast(r.resumed ? '已回到你未完成的尝试' : `已开始第 ${r.attemptNo} 次尝试`, 'ok');
+  } catch (err) {
+    toast(err.message, 'err');
+    // 次数耗尽 / 已截止 / 凭证问题：展示本人当前尝试汇总，便于确认状态
+    refreshMyTaskSummary(taskId, token);
+  }
+});
+
+// 学员视角汇总：我的尝试记录（凭本人凭证）
+async function refreshMyTaskSummary(taskId, token) {
+  const box = $('#task-my-summary');
+  if (!taskId || !token) { box.style.display = 'none'; return; }
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(taskId)}/my?token=${encodeURIComponent(token)}`);
+    const rows = r.attempts.map((a) => `
+      <tr>
+        <td>第 ${a.attemptNo} 次</td>
+        <td class="${a.status === 'active' ? 'status-active' : 'status-ended'}">${a.status === 'active' ? '进行中' : '已结束'}</td>
+        <td>${a.stepNo}</td>
+        <td><b class="${scoreClass(a.totalScore)}">${a.totalScore}</b></td>
+        <td>${fmtTime(a.startedAt)}</td>
+      </tr>`).join('');
+    box.innerHTML = `
+      <div class="hint" style="margin-bottom:6px">
+        ${esc(r.traineeName || '')} · ${esc(r.task.scenarioTitle || '')} v${r.task.version}
+        · 已用 ${r.attemptsUsed}/${r.maxAttempts} 次 · 及格分 ${r.task.passScore}
+        · ${r.task.expired ? '<b style="color:var(--err)">已截止（不能开新尝试，可续做未结束的会话）</b>' : `截止 ${new Date(r.task.deadlineMs).toLocaleString('zh-CN', { hour12: false })}`}
+      </div>
+      ${r.attempts.length ? `
+        <table class="ses-table">
+          <thead><tr><th>尝试</th><th>状态</th><th>步数</th><th>得分</th><th>开始时间</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>` : '<div class="muted">还没有任何尝试。</div>'}`;
+    box.style.display = '';
+  } catch (_) {
+    box.style.display = 'none';
+  }
+}
+
+// ---------- 任务列表 ----------
+
+async function loadTaskList() {
+  const box = $('#task-list');
+  try {
+    const list = await api('/api/tasks');
+    if (!list.length) { box.innerHTML = '<div class="muted">还没有训练任务。培训师可在上方建立。</div>'; return; }
+    box.innerHTML = `
+      <table class="ses-table">
+        <thead><tr><th>任务编号</th><th>情境</th><th>版本</th><th>截止时间</th><th>状态</th><th>次数/人</th><th>及格分</th><th>学员</th><th>尝试</th><th></th></tr></thead>
+        <tbody>
+          ${list.map((t) => {
+            const cred = getTaskCred(t.id);
+            return `<tr>
+              <td><code>${esc(t.id)}</code></td>
+              <td>${esc(t.scenario_title)}</td>
+              <td>v${t.version}</td>
+              <td>${new Date(t.deadline_ms).toLocaleString('zh-CN', { hour12: false })}</td>
+              <td class="${t.expired ? 'status-ended' : 'status-active'}">${t.expired ? '已截止' : '报名中'}</td>
+              <td>${t.max_attempts}</td>
+              <td>${t.pass_score}</td>
+              <td>${t.trainee_count}</td>
+              <td>${t.attempt_count}</td>
+              <td class="ses-actions">
+                ${cred.adminToken ? `<button class="btn sm" data-task-manage="${esc(t.id)}">📋 管理</button>` : ''}
+                ${cred.token ? `<button class="btn sm" data-task-join="${esc(t.id)}">🙋 参与</button>` : ''}
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) { box.innerHTML = `<div class="muted">任务列表加载失败：${esc(err.message)}</div>`; }
+}
+
+$('#task-list').addEventListener('click', (e) => {
+  const manage = e.target.closest('[data-task-manage]');
+  const join = e.target.closest('[data-task-join]');
+  if (manage) {
+    const id = manage.dataset.taskManage;
+    enterManage(id, getTaskCred(id).adminToken);
+  } else if (join) {
+    const id = join.dataset.taskJoin;
+    $('#join-task-id').value = id;
+    $('#join-task-token').value = getTaskCred(id).token || '';
+    $('#btn-join-task').click();
+  }
+});
+
+// ---------- 管理视图（培训师凭管理凭证） ----------
+
+let manageCtx = null; // { taskId, adminToken, timer }
+
+function enterManage(taskId, adminToken) {
+  leaveManageView();
+  manageCtx = { taskId, adminToken, timer: null };
+  $('#tasks-home').hidden = true;
+  $('#task-manage').hidden = false;
+  refreshManage();
+  manageCtx.timer = setInterval(refreshManage, 4000); // 成绩随学员推进自动刷新
+}
+
+function leaveManageView() {
+  if (manageCtx && manageCtx.timer) clearInterval(manageCtx.timer);
+  manageCtx = null;
+}
+
+$('#btn-exit-manage').addEventListener('click', () => {
+  leaveManageView();
+  $('#task-manage').hidden = true;
+  $('#tasks-home').hidden = false;
+  loadTaskHome();
+});
+$('#btn-tm-reload').addEventListener('click', () => refreshManage());
+
+async function refreshManage() {
+  if (!manageCtx) return;
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(manageCtx.taskId)}/manage?token=${encodeURIComponent(manageCtx.adminToken)}`);
+    renderManage(r);
+  } catch (err) {
+    if (err.status === 401 || err.status === 404) {
+      leaveManageView();
+      $('#task-manage').hidden = true;
+      $('#tasks-home').hidden = false;
+      toast(err.message, 'err');
+    }
+    // 其它瞬时错误（网络抖动等）静默，等待下一轮轮询
+  }
+}
+
+function renderManage(r) {
+  const t = r.task;
+  $('#tm-scenario-title').textContent = `${t.scenarioTitle || ''} · v${t.version}`;
+  $('#tm-meta').innerHTML = [
+    `任务 <code>${esc(t.id)}</code>`,
+    `截止 <b>${new Date(t.deadlineMs).toLocaleString('zh-CN', { hour12: false })}</b>${t.expired ? '（<span class="status-ended">已截止，不能开新尝试</span>）' : '（<span class="status-active">报名中</span>）'}`,
+    `每人最多 <b>${t.maxAttempts}</b> 次`,
+    `及格分 <b>${t.passScore}</b>`,
+  ].join(' · ');
+
+  const s = r.summary;
+  $('#tm-summary').innerHTML = `
+    <div class="coverage-stat-grid">
+      <div class="cov-stat"><div class="cov-num">${s.traineeCount}</div><div class="muted">学员人数</div></div>
+      <div class="cov-stat"><div class="cov-num">${s.startedCount}</div><div class="muted">已开始</div></div>
+      <div class="cov-stat covered"><div class="cov-num">${s.passedCount}</div><div class="muted">已及格</div></div>
+      <div class="cov-stat"><div class="cov-num">${s.attemptsTotal}</div><div class="muted">尝试总次数</div></div>
+    </div>`;
+
+  $('#tm-trainees').innerHTML = `
+    <table class="cov-table">
+      <thead><tr><th>学员</th><th>参与凭证</th><th>已用次数</th><th>当前状态</th><th>最高已结束总分</th><th>是否及格</th><th>尝试明细</th></tr></thead>
+      <tbody>
+        ${r.trainees.map((tr) => {
+          const best = tr.bestScore === null
+            ? '<span class="muted">—（无已结束尝试）</span>'
+            : `<b class="${scoreClass(tr.bestScore)}">${tr.bestScore}</b>`;
+          const pass = tr.passed === null
+            ? '<span class="muted">—</span>'
+            : (tr.passed ? '<span class="cov-tag yes">已及格</span>' : '<span class="cov-tag no">未及格</span>');
+          const cur = tr.activeAttemptNo !== null
+            ? `<span class="status-active">第 ${tr.activeAttemptNo} 次进行中</span>`
+            : (tr.attemptsLeft > 0 ? `<span class="muted">可再试 ${tr.attemptsLeft} 次</span>` : '<span class="status-ended">次数已用完</span>');
+          const detail = tr.attempts.length
+            ? `<details><summary>${tr.attemptsUsed} 次记录</summary>
+                <ol class="path-list" style="margin-top:6px">
+                  ${tr.attempts.map((a) => `
+                    <li>第 ${a.attemptNo} 次 · ${a.status === 'active' ? '<span class="status-active">进行中</span>' : '已结束'}
+                      · ${a.stepNo} 步 · 得分 <b class="${scoreClass(a.totalScore)}">${a.totalScore}</b>
+                      <span class="pl-sub">开始 ${fmtTime(a.startedAt)} · 最近推进 ${fmtTime(a.updatedAt)} · 会话 <code>${esc(a.sessionCode)}</code></span>
+                    </li>`).join('')}
+                </ol>
+              </details>`
+            : '<span class="muted">尚无尝试</span>';
+          return `<tr>
+            <td><b>${esc(tr.name)}</b></td>
+            <td><code style="user-select:all">${esc(tr.token)}</code></td>
+            <td>${tr.attemptsUsed}/${t.maxAttempts}</td>
+            <td>${cur}</td>
+            <td>${best}</td>
+            <td>${pass}</td>
+            <td>${detail}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
 
 // ====================== 初始化 ======================
 

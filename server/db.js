@@ -124,6 +124,33 @@ function initSchema() {
   CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_code);
   CREATE INDEX IF NOT EXISTS idx_room_votes_room ON room_votes(room_code, step_no);
   CREATE INDEX IF NOT EXISTS idx_room_steps_open ON room_steps(room_code, status, deadline_ms);
+
+  -- 训练任务：培训师选定已发布冻结版本 + 截止时间 + 每人最多尝试次数 + 及格分 + 学员名单。
+  -- 建立后获得管理凭证（admin_token），每名学员获得独立参与凭证（task_trainees.token）。
+  -- 任务绑定 (scenario_id, version) 冻结版本：后续发布新版本不改变本任务规则。
+  CREATE TABLE IF NOT EXISTS tasks (
+    id              TEXT PRIMARY KEY,        -- 任务编号（10 位）
+    admin_token     TEXT NOT NULL UNIQUE,    -- 管理凭证（查看成绩时出示）
+    scenario_id     TEXT NOT NULL,
+    version         INTEGER NOT NULL,        -- 建立时选定的已发布冻结版本
+    deadline_ms     INTEGER NOT NULL,        -- 截止时间（epoch 毫秒）：之后不能开新尝试，可续做旧会话
+    max_attempts    INTEGER NOT NULL,        -- 每人最多尝试次数（正整数）
+    pass_score      INTEGER NOT NULL,        -- 及格分（整数；按最高已结束总分判定）
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (scenario_id, version) REFERENCES versions(scenario_id, version) ON DELETE RESTRICT
+  );
+
+  -- 任务学员名单：姓名在任务内唯一；token 为各学员的独立参与凭证（全局唯一）
+  CREATE TABLE IF NOT EXISTS task_trainees (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    token           TEXT NOT NULL UNIQUE,    -- 个人参与凭证（开始/续做/查看/选择时出示）
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (task_id, name)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_task_trainees_task ON task_trainees(task_id);
   `);
 
   // 老库迁移：补入复盘分叉所需的溯源列
@@ -149,11 +176,22 @@ function initSchema() {
   if (!settleCols.some((c) => c.name === 'kind')) {
     db.exec(`ALTER TABLE room_settlements ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'`);
   }
+  // 训练任务：会话可属于某个任务的某次尝试（task_id 非空即为任务会话）。
+  // 任务会话只能凭学员个人参与凭证查看/操作，且不计入普通会话列表。
+  addColumn('task_id', 'task_id TEXT');
+  addColumn('task_trainee_id', 'task_trainee_id INTEGER');
+  addColumn('attempt_no', 'attempt_no INTEGER');
   db.exec(`CREATE INDEX IF NOT EXISTS idx_room_steps_open ON room_steps(room_code, status, deadline_ms)`);
   // 存量会话（含建表后尚未回填 root_code 的库）：无溯源信息即为原始会话，根是自身
   db.exec(`UPDATE sessions SET root_code = code WHERE root_code IS NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_root ON sessions(root_code)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_room ON sessions(room_code)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id, task_trainee_id)`);
+  // 硬约束：同一学员在同一任务下至多一条“进行中”的尝试会话。
+  // 并发/重复开始在事务内会先查到这条进行中会话并直接返回它；极端交错下由本唯一索引兜底，
+  // 绝不多建会话、不多扣次数。（普通会话 task_id 为 NULL，不受唯一约束影响。）
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_task_active
+             ON sessions(task_id, task_trainee_id) WHERE status = 'active'`);
 }
 
 function newId(prefix) {

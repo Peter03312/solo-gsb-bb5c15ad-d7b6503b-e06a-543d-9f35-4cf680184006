@@ -89,6 +89,8 @@ function buildSnapshot(content, session, scenarioId, version) {
     traineeName: session.trainee_name || null,
     startedAt: session.created_at,
     roomCode: session.room_code || null, // 非空表示该会话是共识演练房间的共享会话
+    taskId: session.task_id || null, // 非空表示该会话是训练任务的某次尝试（须凭参与凭证访问）
+    attemptNo: session.attempt_no ?? null, // 任务会话的第几次尝试（非任务会话为 null）
     lineage: {
       rootCode: session.root_code || session.code,
       parentCode: session.parent_code || null,
@@ -117,11 +119,21 @@ function computeTotalScore(content, pathRows) {
  *       选项属于当前节点、条件满足。任何不满足都不推进。
  * 房间会话（room_code 非空）属于共识演练，必须经“成员投票 + 主持人结算”推进；
  * 仅房间结算内部调用时传 allowRoomSession: true 放行。
+ * 任务会话（task_id 非空）属于训练任务的某次尝试，必须出示该学员的个人参与凭证
+ * （taskToken）；凭证缺失或不符一律 401 且不返回会话现状（避免泄露）。
  */
-function performMove(db, { code, optionId, stepNo, traineeName, allowRoomSession = false }) {
+function performMove(db, { code, optionId, stepNo, traineeName, allowRoomSession = false, taskToken = null }) {
   const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(code);
   if (!session) {
     return { ok: false, status: 404, errorCode: 'SESSION_NOT_FOUND', error: '会话不存在' };
+  }
+  // 任务会话：先验凭证再谈现状——无有效个人参与凭证时不推进、也不回传任何会话信息
+  if (session.task_id) {
+    const trainee = db.prepare('SELECT token FROM task_trainees WHERE id = ?').get(session.task_trainee_id);
+    if (!trainee || trainee.token !== taskToken) {
+      return { ok: false, status: 401, errorCode: 'TASK_TOKEN_INVALID',
+        error: '该会话属于训练任务，只能凭本人参与凭证操作（未推进）' };
+    }
   }
   const versionRow = db.prepare('SELECT content FROM versions WHERE scenario_id = ? AND version = ?')
     .get(session.scenario_id, session.version);

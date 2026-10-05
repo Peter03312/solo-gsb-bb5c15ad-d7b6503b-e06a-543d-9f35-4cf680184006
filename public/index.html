@@ -12,6 +12,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="trainee">学员演练</button>
       <button class="tab" data-tab="rooms">共识演练</button>
+      <button class="tab" data-tab="tasks">训练任务</button>
       <button class="tab" data-tab="trainer">培训师编排</button>
     </nav>
   </header>
@@ -86,7 +87,7 @@
               <input id="fork-name" class="input sm" maxlength="100" placeholder="分支备注名（可选）" style="margin:6px 0" />
               <button class="btn primary" id="btn-fork" style="width:100%">从此步创建分支</button>
             </div>
-            <div class="card">
+            <div class="card" id="lineage-card">
               <h4>来源与分支对照</h4>
               <div id="lineage-box"><div class="muted">加载中…</div></div>
             </div>
@@ -210,6 +211,89 @@
               <ol id="room-path-list" class="path-list"></ol>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 训练任务 ============ -->
+    <section id="view-tasks" hidden>
+      <div id="tasks-home">
+        <div class="rooms-grid">
+          <div class="card">
+            <h4>🎯 建立训练任务（培训师）</h4>
+            <p class="hint">选定已发布冻结版本、截止时间、每人最多尝试次数、及格分与学员名单；任何一项非法都整次拒绝。建立后获得管理凭证与每名学员的独立参与凭证。</p>
+            <div class="field">
+              <label>已发布情境</label>
+              <select id="task-scenario" class="input"></select>
+            </div>
+            <div class="field">
+              <label>冻结版本</label>
+              <select id="task-version" class="input sm"></select>
+            </div>
+            <div class="field">
+              <label>截止时间（须晚于当前时间；截止后不能开新尝试，可续做旧会话）</label>
+              <input id="task-deadline" type="datetime-local" class="input" />
+            </div>
+            <div class="field">
+              <label>每人最多尝试次数（正整数）</label>
+              <input id="task-max-attempts" type="number" min="1" step="1" value="3" class="input sm" />
+            </div>
+            <div class="field">
+              <label>及格分（整数；按各人最高已结束总分判定）</label>
+              <input id="task-pass-score" type="number" step="1" value="10" class="input sm" />
+            </div>
+            <div class="field">
+              <label>学员名单（每行一个姓名；非空且不重复）</label>
+              <textarea id="task-trainees" class="input" rows="4" placeholder="张三&#10;李四&#10;王五"></textarea>
+            </div>
+            <button class="btn primary" id="btn-create-task" style="width:100%">建立训练任务</button>
+            <div id="task-created" class="room-created hidden">
+              <div>任务编号：<code id="task-id-out" class="big-code"></code></div>
+              <div>管理凭证：<code id="task-admin-out" class="big-code"></code></div>
+              <div class="hint">管理凭证仅在此处与管理视图中展示，请妥善保存；把任务编号与各自参与凭证分发给每名学员。</div>
+              <div id="task-tokens-out" class="token-list"></div>
+              <button class="btn" id="btn-enter-manage" style="width:100%;margin-top:6px">进入该任务管理视图</button>
+            </div>
+          </div>
+          <div class="card">
+            <h4>📋 管理任务（培训师）</h4>
+            <p class="hint">凭任务编号与管理凭证查看各人尝试记录、最高已结束总分与是否达到及格分；无已结束尝试时成绩为空。</p>
+            <div class="field"><input id="manage-task-id" class="input" placeholder="任务编号（10 位）" maxlength="10" /></div>
+            <div class="field"><input id="manage-admin-token" class="input" placeholder="管理凭证（adm_…）" /></div>
+            <button class="btn" id="btn-open-manage" style="width:100%">进入管理视图</button>
+          </div>
+          <div class="card">
+            <h4>🙋 参与任务（学员）</h4>
+            <p class="hint">凭培训师分发的任务编号与你本人的参与凭证开始或续做单人演练；有未结束尝试时重复开始会回到原会话，不额外消耗次数。</p>
+            <div class="field"><input id="join-task-id" class="input" placeholder="任务编号（10 位）" maxlength="10" /></div>
+            <div class="field"><input id="join-task-token" class="input" placeholder="个人参与凭证（ptk_…）" /></div>
+            <button class="btn primary" id="btn-join-task" style="width:100%">开始 / 续做</button>
+            <div id="task-my-summary" class="mt" style="display:none"></div>
+          </div>
+        </div>
+        <div class="section-head mt">
+          <h2>最近任务</h2>
+          <button class="btn ghost" id="btn-reload-tasks">刷新</button>
+        </div>
+        <div id="task-list"></div>
+      </div>
+
+      <div id="task-manage" hidden>
+        <div class="session-bar">
+          <div>
+            <div class="muted" id="tm-scenario-title"></div>
+            <div class="ses-meta" id="tm-meta"></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn ghost" id="btn-tm-reload">刷新</button>
+            <button class="btn ghost" id="btn-exit-manage">返回列表</button>
+          </div>
+        </div>
+        <div id="tm-summary"></div>
+        <div class="card">
+          <h4>学员成绩与尝试记录</h4>
+          <p class="hint">成绩口径：「最高已结束总分」只统计已结束的尝试；无已结束尝试时成绩为空。进行中的尝试不计入及格判定。</p>
+          <div id="tm-trainees"></div>
         </div>
       </div>
     </section>

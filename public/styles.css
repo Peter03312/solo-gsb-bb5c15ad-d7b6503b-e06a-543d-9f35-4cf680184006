@@ -446,3 +446,11 @@ hr.sep { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
 .blind-host-note { padding: 7px 10px; border-radius: 8px; font-size: 12.5px; background: #f3efff; color: #4a3585; border: 1px solid #d9cff5; }
 .host-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .auto-tag { color: var(--brand-dark); font-weight: 600; }
+
+/* ---------- 训练任务 ---------- */
+.task-flag { color: var(--brand); }
+.token-list { display: grid; gap: 6px; margin-top: 4px; }
+.token-row { display: flex; align-items: center; gap: 8px; }
+.token-row .token-name { min-width: 64px; font-weight: 600; }
+.token-row code { cursor: pointer; }
+.token-row code:hover { background: #dbe8f6; }
