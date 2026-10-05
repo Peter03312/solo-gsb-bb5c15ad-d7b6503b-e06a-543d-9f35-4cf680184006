@@ -11,6 +11,7 @@
     <div class="brand">🚒 事故处置情境编排台</div>
     <nav class="tabs">
       <button class="tab active" data-tab="trainee">学员演练</button>
+      <button class="tab" data-tab="tasks">训练任务</button>
       <button class="tab" data-tab="rooms">共识演练</button>
       <button class="tab" data-tab="trainer">培训师编排</button>
     </nav>
@@ -210,6 +211,157 @@
               <ol id="room-path-list" class="path-list"></ol>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 训练任务（培训师建任务 / 学员单人演练） ============ -->
+    <section id="view-tasks" hidden>
+      <div id="tasks-home">
+        <div class="rooms-grid">
+          <div class="card">
+            <h4>📝 建立训练任务（培训师）</h4>
+            <p class="hint">选定已发布的<b>冻结版本</b>、截止时间、每人最多尝试次数、及格分与学员名单；任务规则随版本冻结，系统返回管理凭证与每名学员的独立参与凭证。非法配置会整次拒绝。</p>
+            <div class="field">
+              <label>已发布情境</label>
+              <select id="task-scenario" class="input"></select>
+            </div>
+            <div class="field">
+              <label>冻结版本</label>
+              <select id="task-version" class="input sm"></select>
+            </div>
+            <div class="field">
+              <label>截止时间（必须晚于当前时间）</label>
+              <input id="task-deadline" class="input" type="datetime-local" step="1" />
+            </div>
+            <div class="timed-duration-row">
+              <div class="field" style="flex:1">
+                <label>每人最多尝试次数（正整数）</label>
+                <input id="task-max-attempts" class="input sm" type="number" min="1" step="1" value="2" />
+              </div>
+              <div class="field" style="flex:1">
+                <label>及格分（整数）</label>
+                <input id="task-pass-score" class="input sm" type="number" step="1" value="60" />
+              </div>
+            </div>
+            <div class="field">
+              <label>学员名单（每行一个姓名，不能为空、不得重复）</label>
+              <textarea id="task-trainees" class="input" rows="4" placeholder="张三&#10;李四&#10;王五"></textarea>
+            </div>
+            <button class="btn primary" id="btn-create-task" style="width:100%">建立训练任务</button>
+            <div id="task-created" class="room-created hidden"></div>
+          </div>
+
+          <div class="card">
+            <h4>🙋 学员进入我的任务</h4>
+            <p class="hint">凭培训师单独发给你的<b>个人参与凭证</b>（tmem_…）进入：开始/续做你自己的单人演练。同一时间只能有一次未结束尝试，结束后才占用下一次名额；截止后不能新开，但可续做旧尝试。</p>
+            <div class="field"><input id="task-my-token" class="input" placeholder="个人参与凭证 tmem_…" /></div>
+            <button class="btn primary" id="btn-task-enter-trainee" style="width:100%">进入我的训练任务</button>
+            <div id="task-my-saved" class="hint" style="margin-top:8px"></div>
+          </div>
+
+          <div class="card">
+            <h4>🎓 培训师管理台进入</h4>
+            <p class="hint">凭任务码与管理凭证（tmgr_…）查看每名学员的尝试记录、最高已结束总分及是否达到及格分。</p>
+            <div class="field"><input id="task-mgr-code" class="input" placeholder="任务码（10 位）" maxlength="10" /></div>
+            <div class="field"><input id="task-mgr-token" class="input" placeholder="管理凭证 tmgr_…" /></div>
+            <button class="btn" id="btn-task-enter-manager" style="width:100%">进入管理台</button>
+          </div>
+        </div>
+        <div class="section-head mt">
+          <h2>最近训练任务</h2>
+          <button class="btn ghost" id="btn-reload-tasks">刷新</button>
+        </div>
+        <div id="task-list"></div>
+      </div>
+
+      <!-- 学员：自己的任务概览 -->
+      <div id="task-trainee-view" hidden>
+        <div class="session-bar">
+          <div>
+            <div class="muted" id="tt-scenario-title"></div>
+            <div class="ses-meta">
+              任务 <code id="tt-code"></code> · 冻结版本 <b id="tt-version"></b>
+              · 及格分 <b id="tt-pass"></b> · 每人最多 <b id="tt-max"></b> 次
+              · 已用/剩余 <b id="tt-used"></b> / <b id="tt-left"></b>
+            </div>
+            <div id="tt-deadline-bar" class="timer-bar" style="margin-top:6px"></div>
+          </div>
+          <button class="btn ghost" id="btn-tt-back">返回</button>
+        </div>
+        <div id="tt-banner" class="banner hidden"></div>
+        <div class="card">
+          <div class="card-head">
+            <h4>🙋 <span id="tt-name"></span> 的演练</h4>
+            <button class="btn primary" id="btn-tt-start">开始 / 续做当前尝试</button>
+          </div>
+          <div class="hint" id="tt-score-line"></div>
+          <div id="tt-attempts" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <!-- 学员：某次尝试的演练会话 -->
+      <div id="task-attempt-view" hidden>
+        <div class="session-bar">
+          <div>
+            <div class="muted" id="ta-scenario-title"></div>
+            <div class="ses-meta">
+              任务 <code id="ta-task-code"></code> · 第 <b id="ta-attempt-no"></b> 次尝试
+              · 会话 <code id="ta-code"></code> · 当前第 <b id="ta-step">0</b> 步
+              · 累计 <b id="ta-score">0</b>
+            </div>
+          </div>
+          <div>
+            <button class="btn ghost" id="btn-ata-back-task">返回任务概览</button>
+          </div>
+        </div>
+        <div id="ta-banner" class="banner hidden"></div>
+        <div class="session-grid">
+          <div class="col-main">
+            <div class="card" id="ta-node-card">
+              <div class="node-kick" id="ta-node-kick"></div>
+              <h3 id="ta-node-title"></h3>
+              <p class="narrative" id="ta-node-narrative"></p>
+            </div>
+            <div class="card">
+              <h4>你的选择</h4>
+              <div id="ta-option-list"></div>
+            </div>
+          </div>
+          <div class="col-side">
+            <div class="card">
+              <h4>现场状态</h4>
+              <div id="ta-state-list"></div>
+            </div>
+            <div class="card">
+              <h4>已走路径</h4>
+              <ol id="ta-path-list" class="path-list"></ol>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 培训师：管理台 -->
+      <div id="task-manager-view" hidden>
+        <div class="session-bar">
+          <div>
+            <div class="muted" id="tm-scenario-title"></div>
+            <div class="ses-meta">
+              任务 <code id="tm-code"></code> · 冻结版本 <b id="tm-version"></b>
+              · 及格分 <b id="tm-pass"></b> · 每人最多 <b id="tm-max"></b> 次
+              · 学员 <b id="tm-count"></b> 人
+            </div>
+            <div id="tm-deadline-bar" class="timer-bar" style="margin-top:6px"></div>
+          </div>
+          <button class="btn ghost" id="btn-tm-back">返回</button>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h4>🎓 学员尝试记录与成绩</h4>
+            <button class="btn ghost" id="btn-tm-reload">刷新</button>
+          </div>
+          <p class="hint">最高分为各学员<b>已结束</b>尝试中的总分最高值；尚无已结束尝试时成绩为空。及格判定以该最高分对比及格分。</p>
+          <div id="tm-table"></div>
         </div>
       </div>
     </section>

@@ -446,3 +446,15 @@ hr.sep { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
 .blind-host-note { padding: 7px 10px; border-radius: 8px; font-size: 12.5px; background: #f3efff; color: #4a3585; border: 1px solid #d9cff5; }
 .host-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .auto-tag { color: var(--brand-dark); font-weight: 600; }
+
+/* ---------- 训练任务 ---------- */
+.task-cred-list { margin-top: 6px; display: grid; gap: 6px; }
+.task-cred-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+}
+.task-cred-row b { flex: none; min-width: 48px; }
+.task-cred-row .big-code { font-size: 13px; }
+.tm-attempts { min-width: 260px; }
+.tm-attempt { font-size: 12px; padding: 2px 0; color: var(--muted); }
+.tm-attempt code { margin-left: 4px; }

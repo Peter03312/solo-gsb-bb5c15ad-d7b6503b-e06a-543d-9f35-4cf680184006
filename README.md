@@ -17,6 +17,7 @@
 - **限时模式（可选）**：开房时可勾选限时并填写**每步时长（30～3600 秒，整数）**，省略该设置的旧用法**完全保持原样**。限时房间在**每步开始时持久记录截止时间**，页面显示**截止时间与每秒刷新的剩余时间**；**截止前**可改票或由主持人**提前结算**，**到点后**拒绝本步一切新票/改票——**有票**则沿用既有多数决、同票顺序、路径推进与计分规则**自动结算**（`kind=auto`），并**从实际推进时刻**为下一步计满时长；**零票**时不推进、停在本步并**标记待重开**，主持人可凭**主持凭证 + 所见步号**把本步**重开完整时长**。即使**无人访问或服务重启**，启动时与运行中定时扫描也会**补办到期结算/暂停**；自动结算、投票、手动结算与重开相遇时由事务与唯一约束保证**不会重复推进**，失败一律返回原因和当前步号，且不改票数、路径、得分
 - **盲投模式（可选）**：开房时可用**布尔值** `blind` 选择盲投（`true`/`false`）；**未指定**该字段及**存量房间维持现有公开投票规则**，传**非布尔值**（`null`、字符串、数字等）返回 `400 BLIND_INVALID` 且**不建房**。盲投房间在**当前步结算前**，无论**围观者、学员还是主持人都只看到已投人数**，不显示各选项票数或逐人选项（快照中各选项 `votes=null`、主持视图 `votes=null`）；学员凭**成员凭证仍可查看、修改自己的票**（`myVote`），主持人仍可查看**成员名单**（`members`，不含各自选项）。主持人**提前结算**或到点**自动结算**后，公布该步**各选项票数与获胜处置**（`settlements` / 已结算路径），但**始终不公开姓名与选项的对应关系**（留痕与响应均不含姓名）。**零票到点暂停及重开期间继续保密**，**已结算步的结果保持可见**；截止、同票顺序、路径推进与计分规则沿用现状。**盲投选择创建后不可更改**。盲投可与限时模式叠加使用
 - **处置覆盖报告**：培训师可针对任一**已发布冻结版本**查看覆盖情况——以该版本从初态可达的「**节点 × 进入时现场状态 × 可选选项**」组合为覆盖项，给出**总数 / 已覆盖 / 未覆盖**与逐项明细，可一键**只看未覆盖项**，方便找到学员还没练到的处置
+- **训练任务（单人、限时限次）**：培训师选定**已发布的冻结版本**、**截止时间**、**每人最多尝试次数**、**及格分**与**学员名单**建立训练任务，取得**管理凭证**与**每名学员独立的参与凭证**。截止时间必须晚于当前时间、次数为正整数、及格分为整数、名单非空且姓名不重复，**非法配置整次拒绝**。学员凭**个人凭证**开始或续做**自己的单人演练**：同一人有未结束尝试时重复“开始”返回**原会话**，该尝试结束后才占用下一次名额；**截止后不能开新尝试，但可续做旧会话**。任务会话沿**冻结版本**的选项条件、步号与计分规则推进，**只能凭个人凭证查看与操作**，普通会话列表/查询/推进/分叉入口一律拒绝，不能绕过权限与次数。培训师凭管理凭证查看各人**尝试记录、最高已结束总分及是否达到及格分**（无已结束尝试时成绩为空）；无效凭证、次数耗尽、并发重复开始都有明确反馈，**不会多建会话或多扣次数**
 - 草稿中的**无效引用**（不存在的状态/目标节点）与**矛盾条件**（同一状态同时要求是和否）在保存时即被拒绝；**非整数或越界分值**同样在保存时拒绝
 
 ---
@@ -89,7 +90,7 @@ npm start
 | `APP_PORT`（仅 Compose） | `8080` | 宿主机映射端口，改它即可，无需改 Dockerfile |
 | `TZ` | `Asia/Shanghai` | 容器时区（影响时间显示） |
 
-数据库表：`scenarios`（情境及草稿）、`versions`（每次发布冻结的完整内容）、`sessions`（学员会话：步号、状态位掩码、已走路径、绑定版本，复盘分叉溯源列 `parent_code` / `fork_step_no` / `root_code`，以及房间会话标记列 `room_code`）、`rooms`（共识演练房间：加入码、主持凭证、绑定冻结版本与共享会话，限时模式列 `step_duration`，NULL 为旧用法；盲投列 `blind_vote`，1=盲投、0=公开，存量房间默认 0）、`room_members`（房间成员及成员凭证）、`room_votes`（按「房间 × 步号 × 成员」记票，每人每步只计最后一票）、`room_steps`（限时房间每步一条计时记录：持久化截止时间 `deadline_ms`、状态 `open`/`awaiting_reopen`、重开次数）、`room_settlements`（每步结算留痕：获胜选项与各选项票数，`kind` 为 `manual`/`auto`；任何房间都不留存姓名↔选项对应）。
+数据库表：`scenarios`（情境及草稿）、`versions`（每次发布冻结的完整内容）、`sessions`（学员会话：步号、状态位掩码、已走路径、绑定版本，复盘分叉溯源列 `parent_code` / `fork_step_no` / `root_code`，房间会话标记列 `room_code`，训练任务尝试会话标记列 `task_code`）、`rooms`（共识演练房间：加入码、主持凭证、绑定冻结版本与共享会话，限时模式列 `step_duration`，NULL 为旧用法；盲投列 `blind_vote`，1=盲投、0=公开，存量房间默认 0）、`room_members`（房间成员及成员凭证）、`room_votes`（按「房间 × 步号 × 成员」记票，每人每步只计最后一票）、`room_steps`（限时房间每步一条计时记录：持久化截止时间 `deadline_ms`、状态 `open`/`awaiting_reopen`、重开次数）、`room_settlements`（每步结算留痕：获胜选项与各选项票数，`kind` 为 `manual`/`auto`；任何房间都不留存姓名↔选项对应）、`training_tasks`（训练任务：任务码、管理凭证、绑定冻结版本、截止时间 `deadline_ms`、每人最多尝试次数、及格分）、`task_trainees`（任务学员名单与各人独立参与凭证，同任务姓名唯一）、`task_attempts`（每人每次尝试：尝试序号、绑定会话、状态 `active`/`ended`、开始/结束时刻；部分唯一索引保证同一人至多一条进行中尝试）。
 
 ---
 
@@ -215,6 +216,31 @@ npm start
 - **暂停 / 重开期间继续保密**：盲投 + 限时房到点**零票暂停**（`timer.phase=awaiting_reopen`）及主持人**重开**后，当前步依旧只显示已投人数（为 0）与成员名单，不显示任何选项票数；已结算的历史步结果（票数、获胜处置）在后续步快照中**保持可见**。
 - **沿用现状的部分**：截止时间与到点处理、同票按冻结版本选项编排顺序、共享路径推进、计分、凭证校验、步号校验（`STEP_STALE` 等）、无人投票不得结算、房间会话不得绕过投票等规则全部不变。
 
+### 训练任务（单人演练 · 限时限次 · 独立凭证）
+
+培训师为指定学员名单建立**单人**训练任务，每人凭独立凭证独立演练，系统按冻结版本自动计分、统计成绩：
+
+1. **建立任务（培训师，「训练任务」页）**：选择已发布情境与**冻结版本**，填写
+   - **截止时间**（必须**严格晚于当前时间**；接受 ISO 8601 字符串 `deadline` 或整数毫秒 `deadlineMs`）；
+   - **每人最多尝试次数**（**正整数**）；
+   - **及格分**（**整数**）；
+   - **学员名单**（非空，每行/每项一个姓名；去首尾空白后**不得重复**）。
+   提交后系统返回 **10 位任务码**、**管理凭证**（`tmgr_…`）与每名学员各自的**个人参与凭证**（`tmem_…`）。任意一项配置不合法都会**整次拒绝**并逐项列出原因，不创建任务、不生成任何凭证。任务绑定所选冻结版本，之后再发布新版本不改变本任务规则。
+2. **学员开始 / 续做（「训练任务」页凭个人凭证进入）**：
+   - 点「开始 / 续做当前尝试」：**没有进行中尝试**时新建一次尝试（独立会话，沿任务冻结版本推进与计分）；**已有未结束尝试**时重复开始只返回**同一个会话**，不会多建、不占新名额；
+   - 某次尝试**到达结局即结束**，此时才占用一个名额；结束后（有名额且未截止）才能开始下一次；
+   - **截止时间之后不能再开新尝试**；但截止前已经开始、尚未结束的尝试，截止后**仍可继续操作到结局**（续做旧会话）；
+   - 选择的步号、选项条件、计分规则与普通单人演练完全一致（`STEP_STALE` / `CONDITION_NOT_MET` / `OPTION_NOT_FOUND` / `SESSION_ENDED` 等错误码不变），失败不推进、不计分。
+3. **培训师管理台**：凭任务码 + 管理凭证查看**每名学员**的尝试序号、会话码、状态、步数、每次总分、**最高已结束总分**与**是否达到及格分**；**无已结束尝试时最高分与及格判定均为空**（`null`）。
+4. **权限隔离（不能绕过）**：任务尝试会话
+   - **不出现在**普通会话列表 `GET /api/sessions`；
+   - 普通查询 `GET /api/sessions/:code` 返回 `409 TASK_SESSION_FORBIDDEN`；
+   - 普通推进 `POST /api/sessions/:code/move` 返回 `409 TASK_SOLO_MOVE_FORBIDDEN`（内部兜底同名错误码）；
+   - 复盘分叉 `POST /api/sessions/:code/fork` 与家族树返回 `409 TASK_FORK_FORBIDDEN`；
+   - 只能由本人持**个人参与凭证**经任务接口查看/操作；拿别人的凭证/尝试号访问得到 `401 TASK_TOKEN_INVALID` 或 `404 ATTEMPT_NOT_FOUND`。
+5. **并发安全**：同一学员的并发/重复“开始”由数据库部分唯一索引（同一任务同一学员至多一条 `active` 尝试）保证**只产生一个会话、只占一个名额**，竞争失败的请求回滚后返回那条进行中尝试；次数耗尽返回 `409 ATTEMPTS_EXHAUSTED`，截止后新开返回 `409 TASK_DEADLINE_PASSED`。
+6. **既有用法不受影响**：普通单人演练的开始/列表/继续、复盘分叉、共识房间等接口与页面保持原样；仅在相关入口增量拒绝任务会话。
+
 ---
 
 ## 五、发布检查规则（核心）
@@ -267,6 +293,13 @@ npm start
 | POST | `/api/rooms/:code/vote` | `{memberToken, optionId, stepNo}` 投票/改票（每人每步只计最后一票）；限时房到点后拒绝本步投票 |
 | POST | `/api/rooms/:code/settle` | `{hostToken, observedStepNo}` 主持人结算：多数决推进共享会话，同票按编排顺序；限时房截止前为提前结算，到点由系统自动结算（响应 `settled.kind=auto`） |
 | POST | `/api/rooms/:code/reopen` | `{hostToken, observedStepNo}` **仅限时房间**：本步到点零票暂停后重开完整时长，不推进；返回新截止时间 |
+| POST | `/api/tasks` | 建立训练任务：`{scenarioId, version?, deadline(ISO 字符串)|deadlineMs(整数毫秒), maxAttempts, passScore, trainees:[姓名…]}`；截止晚于当前、次数正整数、及格分整数、名单非空且姓名不重复，非法配置整次拒绝（400 `TASK_CONFIG_INVALID`，逐项 `errors`）；成功返回任务码、管理凭证 `tmgr_…` 与各学员独立参与凭证 `tmem_…`（201） |
+| GET | `/api/tasks` | 最近训练任务列表（不含任何凭证；含截止时间、及格分、次数、学员数、尝试数） |
+| GET | `/api/tasks/my?token=` | 学员凭个人参与凭证查看自己的任务与尝试概况（401 `TASK_TOKEN_INVALID`） |
+| GET | `/api/tasks/:code/report?hostToken=` | 培训师凭管理凭证查看各人尝试记录、最高已结束总分与及格判定（401 `TASK_HOST_TOKEN_INVALID`） |
+| POST | `/api/tasks/attempts/start` | `{token}` 开始或续做：有进行中尝试返回原会话（200 `resumed`），否则新建（201 `created`）；截止后新开 `409 TASK_DEADLINE_PASSED`、次数耗尽 `409 ATTEMPTS_EXHAUSTED`；并发重复开始不多建/不占名额 |
+| POST | `/api/tasks/attempts/get` | `{token, attemptNo?}` 查看某次尝试会话；省略 `attemptNo` 取进行中尝试（无则 404 `ACTIVE_ATTEMPT_NOT_FOUND`） |
+| POST | `/api/tasks/attempts/move` | `{token, attemptNo, optionId, stepNo}` 在某次尝试中执行一步；沿用冻结版本全部步号/条件/计分校验，到结局该尝试结束；截止后仍可续做旧会话 |
 
 ### 评分相关字段（随版本冻结，旧版本/旧会话自动按 0 分兜底）
 
@@ -696,6 +729,117 @@ curl -s -X POST localhost:8080/api/rooms/a1b2c3d4e5/reopen \
 
 ---
 
+## 六之四、训练任务接口
+
+训练任务把“一次课堂单人测验”固化为：**冻结版本 + 截止时间 + 每人限次 + 及格分 + 名单**。
+两类凭证：培训师的**管理凭证** `tmgr_…`（仅建任务时完整返回一次），每名学员各自的**个人参与凭证** `tmem_…`（也是建任务时一次性返回，由培训师分别下发）。
+
+- 建任务：`POST /api/tasks`，体 `{scenarioId, version?, deadline|deadlineMs, maxAttempts, passScore, trainees}`。
+- 学员：`GET /api/tasks/my`、`POST /api/tasks/attempts/start|get|move`，均携带个人 `token`。
+- 培训师：`GET /api/tasks/:code/report?hostToken=`。
+- 所有失败均形如 `{ error, errorCode, ... }`；尝试相关失败额外带 `view`（该学员任务概况），推进失败带 `current`（会话现状）。
+
+错误码：
+
+| 情况 | errorCode（HTTP） |
+| --- | --- |
+| 任一建任务配置非法（截止不晚于当前/次数非正整数/及格分非整数/名单为空或重名/版本未发布等） | `TASK_CONFIG_INVALID`（400，整次拒绝，`errors[]` 逐项） |
+| 个人参与凭证无效 | `TASK_TOKEN_INVALID`（401） |
+| 管理凭证无效 | `TASK_HOST_TOKEN_INVALID`（401） |
+| 任务不存在 | `TASK_NOT_FOUND`（404） |
+| 截止后要求**新开**尝试（旧尝试仍可续做） | `TASK_DEADLINE_PASSED`（409） |
+| 尝试次数已用完 | `ATTEMPTS_EXHAUSTED`（409） |
+| 没有进行中的尝试却要求取“当前”尝试 | `ACTIVE_ATTEMPT_NOT_FOUND`（404） |
+| 指定的尝试序号不存在（含访问他人尝试） | `ATTEMPT_NOT_FOUND`（404） |
+| `attemptNo` 非 ≥1 整数 | `ATTEMPT_NO_INVALID`（400） |
+| 任务会话走普通查询/推进/分叉入口 | `TASK_SESSION_FORBIDDEN` / `TASK_SOLO_MOVE_FORBIDDEN` / `TASK_FORK_FORBIDDEN`（409） |
+| 尝试会话内部的步号/条件/选项/已结束 | 沿用 `STEP_STALE` / `CONDITION_NOT_MET` / `OPTION_NOT_FOUND` / `SESSION_ENDED` |
+
+```bash
+# 0) 培训师建立任务（deadline 用 ISO 字符串，或 deadlineMs 毫秒整数；必须晚于当前）
+curl -s -X POST localhost:8080/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"scenarioId":"sc_14f5505a2f47a3a3","version":1,
+       "deadline":"2026-12-31T10:00:00+08:00",
+       "maxAttempts":2,"passScore":10,
+       "trainees":["张三","李四"]}'
+# 201 ->
+# { "ok":true,"code":"a1b2c3d4e5",
+#   "hostToken":"tmgr_9f8e7d6c…",
+#   "deadlineMs":1798682400000,"deadlineAt":"2026-12-31T02:00:00.000Z",
+#   "maxAttempts":2,"passScore":10,
+#   "trainees":[ {"name":"张三","token":"tmem_AAA1…"},
+#                {"name":"李四","token":"tmem_BBB2…"} ] }
+
+# 非法配置：整次拒绝（不建任务、不发凭证），errors 逐项说明
+curl -s -X POST localhost:8080/api/tasks -H 'Content-Type: application/json' \
+  -d '{"scenarioId":"sc_14f5505a2f47a3a3","version":1,
+       "deadlineMs":1,"maxAttempts":0,"passScore":1.5,"trainees":["a","a"]}'
+# 400 { "errorCode":"TASK_CONFIG_INVALID",
+#       "errors":["截止时间必须晚于当前时间…",
+#                 "每人最多尝试次数非法：0（必须是正整数）",
+#                 "及格分非法：1.5（必须是整数）",
+#                 "学员姓名重复：「a」…"] }
+
+# 1) 学员张三查看自己的任务概况
+curl -s 'localhost:8080/api/tasks/my?token=tmem_AAA1…'
+# -> { "code":"a1b2c3d4e5","version":1,"closed":false,
+#      "maxAttempts":2,"passScore":10,
+#      "attemptsUsed":0,"attemptsLeft":2,"activeAttemptNo":null,
+#      "bestScore":null,"passed":null,"attempts":[] }
+
+# 2) 开始第一次尝试（201 新建；重复调用返回同一会话，200 resumed）
+curl -s -X POST localhost:8080/api/tasks/attempts/start \
+  -H 'Content-Type: application/json' -d '{"token":"tmem_AAA1…"}'
+# -> 201 { "created":true,"resumed":false,"attemptNo":1,
+#          "sessionCode":"c0de…", "stepNo":0,
+#          "availableOptions":[…], "task":{…概况…} }
+curl -s -X POST localhost:8080/api/tasks/attempts/start \
+  -H 'Content-Type: application/json' -d '{"token":"tmem_AAA1…"}'
+# -> 200 { "created":false,"resumed":true,"attemptNo":1,"sessionCode":"c0de…" }
+
+# 3) 在第 1 次尝试里逐步选择（携带当前步号；规则/计分按冻结版本）
+curl -s -X POST localhost:8080/api/tasks/attempts/move \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"tmem_AAA1…","attemptNo":1,"optionId":"o_cut_power","stepNo":0}'
+# -> { "ended":false,"stepNo":1,"totalScore":3,
+#      "lastMove":{"step":1,"score":3,"scoreNote":"…","totalScore":3}, … }
+# 过期步号 -> 409 { "errorCode":"STEP_STALE","current":{…现状…},"view":{…任务概况…} }
+
+# 4) 查看某次尝试（省略 attemptNo=进行中的那次；已结束也可回看）
+curl -s -X POST localhost:8080/api/tasks/attempts/get \
+  -H 'Content-Type: application/json' -d '{"token":"tmem_AAA1…","attemptNo":1}'
+# 无进行中尝试时省略 attemptNo -> 404 ACTIVE_ATTEMPT_NOT_FOUND
+
+# 5) 结束后开始第 2 次；次数用完 -> 409 ATTEMPTS_EXHAUSTED
+curl -s -X POST localhost:8080/api/tasks/attempts/start \
+  -H 'Content-Type: application/json' -d '{"token":"tmem_AAA1…"}'
+# 第 3 次（maxAttempts=2）-> 409 { "errorCode":"ATTEMPTS_EXHAUSTED",
+#                                "error":"…最多 2 次，你已使用 2 次","view":{…} }
+
+# 6) 培训师查看成绩（无已结束尝试时 bestScore/passed 为 null）
+curl -s 'localhost:8080/api/tasks/a1b2c3d4e5/report?hostToken=tmgr_9f8e7d6c…'
+# -> { "code":"a1b2c3d4e5","maxAttempts":2,"passScore":10,"closed":false,
+#      "traineeCount":2,
+#      "trainees":[
+#        {"name":"张三","attemptsUsed":2,"attemptsLeft":0,"activeAttemptNo":null,
+#         "bestScore":10,"passed":true,
+#         "attempts":[{"attemptNo":1,"status":"ended","totalScore":-10,…},
+#                    {"attemptNo":2,"status":"ended","totalScore":10,…}]},
+#        {"name":"李四","attemptsUsed":0,"attemptsLeft":2,"activeAttemptNo":null,
+#         "bestScore":null,"passed":null,"attempts":[]} ] }
+
+# 7) 权限隔离：任务会话不能从普通入口绕过
+curl -s localhost:8080/api/sessions/c0de…
+# 409 { "errorCode":"TASK_SESSION_FORBIDDEN", … }
+curl -s -X POST localhost:8080/api/sessions/c0de…/move \
+  -H 'Content-Type: application/json' -d '{"optionId":"x","stepNo":0}'
+# 409 { "errorCode":"TASK_SOLO_MOVE_FORBIDDEN", … }
+# GET /api/sessions 列表中不包含任何任务会话
+```
+
+---
+
 ## 七、目录结构
 
 ```
@@ -704,20 +848,22 @@ curl -s -X POST localhost:8080/api/rooms/a1b2c3d4e5/reopen \
 ├── docker-compose.yml
 ├── package.json / package-lock.json
 ├── server/
-│   ├── server.js      # Express 路由（编排 / 发布 / 会话 / 复盘分叉 / 处置覆盖报告 / 共识演练房间接口），限时房到期补办调度
-│   ├── db.js          # SQLite 连接、建表（含老库加列迁移：rooms.step_duration / rooms.blind_vote / room_steps / room_settlements.kind）、id 生成
+│   ├── server.js      # Express 路由（编排 / 发布 / 会话 / 复盘分叉 / 处置覆盖报告 / 共识演练房间 / 训练任务接口），限时房到期补办调度
+│   ├── db.js          # SQLite 连接、建表（含老库加列迁移：rooms.step_duration / rooms.blind_vote / room_steps / room_settlements.kind / sessions.task_code；training_tasks / task_trainees / task_attempts）、id 生成
 │   ├── scenario.js    # 草稿校验 + 状态空间可达性/死路/循环分析
-│   ├── session.js     # 会话快照、“带步号的一步”推进（房间会话拒绝单人入口）、forkSession 分叉、loadLineage 对照树
+│   ├── session.js     # 会话快照、“带步号的一步”推进（房间/任务会话拒绝普通单人入口）、forkSession 分叉（任务会话禁止）、loadLineage 对照树
 │   ├── room.js        # 共识演练房间：开启（可选限时/盲投）/加入/投票改票/主持结算/到点自动结算/零票暂停与重开/到期补办 sweep/盲投脱敏房间快照
+│   ├── task.js        # 训练任务：建任务配置校验（整次拒绝）/学员个人凭证/开始续做尝试（并发不重复、截止/限次）/尝试推进与结束/培训师成绩报表
 │   ├── coverage.js    # 处置覆盖报告：覆盖项枚举 + 按家族去重的已完成路径回放（损坏整体报错）
 │   └── seed.js        # 内置示例情境（首启写入）
 ├── scripts/
-│   ├── test-timed-room.js  # 限时房间端到端验证（临时库：开房校验/提前结算/到点自动结算/零票重开/旧用法兼容/防重复推进）
-│   └── test-blind-room.js  # 盲投房间端到端验证（临时库：blind 布尔校验不建房/结算前三视图脱敏/学员 myVote/主持成员名单/结算公布票数无姓名/盲投×限时暂停重开/公开房兼容）
+│   ├── test-timed-room.js      # 限时房间端到端验证（临时库：开房校验/提前结算/到点自动结算/零票重开/旧用法兼容/防重复推进）
+│   ├── test-blind-room.js      # 盲投房间端到端验证（临时库：blind 布尔校验不建房/结算前三视图脱敏/学员 myVote/主持成员名单/结算公布票数无姓名/盲投×限时暂停重开/公开房兼容）
+│   └── test-training-task.js   # 训练任务端到端验证（临时库：配置整次拒绝/开始续做幂等/凭证隔离/截止新旧尝试/次数耗尽/及格与最高已结束分/无成绩为空/并发不多建/普通入口拦截/旧用法回归）
 ├── public/
-│   ├── index.html     # 单页界面（学员演练 / 共识演练 / 培训师编排三个页签，编排内含处置覆盖报告视图）
+│   ├── index.html     # 单页界面（学员演练 / 训练任务 / 共识演练 / 培训师编排四个页签，编排内含处置覆盖报告视图）
 │   ├── styles.css
-│   └── app.js         # 含复盘分叉面板、来源/分支对照树、处置覆盖报告视图与共识演练房间视图（投票/主持台/限时倒计时/重开/盲投阶段提示与脱敏/轮询）
+│   └── app.js         # 含复盘分叉面板、来源/分支对照树、处置覆盖报告视图、共识演练房间视图（投票/主持台/限时倒计时/重开/盲投）与训练任务视图（建任务/学员开始续做/管理台成绩）
 └── data/              # 运行后生成：SQLite 数据库（持久化卷）
 ```
 

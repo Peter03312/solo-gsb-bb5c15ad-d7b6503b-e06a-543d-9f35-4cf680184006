@@ -18,6 +18,7 @@ const {
 const { buildSnapshot, performMove, forkSession, loadLineage, computeTotalScore } = require('./session');
 const { buildCoverageReport } = require('./coverage');
 const roomOps = require('./room');
+const taskOps = require('./task');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'app.db');
@@ -282,12 +283,15 @@ app.post('/api/sessions', (req, res) => {
 });
 
 // 会话列表（便于恢复；总分按各自绑定版本的冻结规则与已完成路径实时计算）
+// 训练任务的会话不在此列出：它们只能由对应学员凭个人参与凭证经任务入口查看/操作，
+// 普通列表不得绕过任务的权限、次数与截止控制。
 app.get('/api/sessions', (req, res) => {
   const rows = db.prepare(`
     SELECT se.code, se.scenario_id, s.title AS scenario_title, se.version, se.status,
            se.step_no, se.trainee_name, se.current_node_id, se.created_at, se.updated_at,
            se.parent_code, se.fork_step_no, se.root_code, se.room_code, se.path
       FROM sessions se JOIN scenarios s ON s.id = se.scenario_id
+     WHERE se.task_code IS NULL
      ORDER BY se.updated_at DESC LIMIT 200
   `).all();
   const contentCache = new Map();
@@ -316,6 +320,13 @@ app.get('/api/sessions', (req, res) => {
 app.get('/api/sessions/:code', (req, res) => {
   const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(req.params.code);
   if (!session) return res.status(404).json({ error: '会话不存在' });
+  // 任务会话只能凭个人参与凭证经任务入口查看，普通查询入口拒绝
+  if (session.task_code) {
+    return res.status(409).json({
+      error: `该会话属于训练任务 ${session.task_code}，只能由对应学员凭个人参与凭证在任务内查看，普通会话入口不提供访问`,
+      errorCode: 'TASK_SESSION_FORBIDDEN',
+    });
+  }
   const versionRow = db.prepare('SELECT content FROM versions WHERE scenario_id = ? AND version = ?')
     .get(session.scenario_id, session.version);
   if (!versionRow) return res.status(500).json({ error: '版本内容缺失' });
@@ -332,6 +343,15 @@ app.post('/api/sessions/:code/move', (req, res) => {
   const { optionId, stepNo, traineeName } = req.body || {};
   if (typeof optionId !== 'string') return res.status(400).json({ error: '缺少 optionId' });
   if (!Number.isInteger(stepNo)) return res.status(400).json({ error: '缺少或非法的 stepNo（必须为整数）' });
+
+  // 任务会话不得经普通单人推进入口绕过任务的凭证/次数/截止控制
+  const pre = db.prepare('SELECT task_code FROM sessions WHERE code = ?').get(req.params.code);
+  if (pre && pre.task_code) {
+    return res.status(409).json({
+      error: `该会话属于训练任务 ${pre.task_code}，须由对应学员凭个人参与凭证经任务入口推进（未推进）`,
+      errorCode: 'TASK_SOLO_MOVE_FORBIDDEN',
+    });
+  }
 
   const result = performMove(db, { code: req.params.code, optionId, stepNo, traineeName });
   if (!result.ok) {
@@ -411,6 +431,13 @@ app.post('/api/sessions/:code/fork', (req, res) => {
 // 来源与分支对照：返回同一家族（root_code）下原始会话与全部分支的树，
 // 每个节点携带来源、分歧步与各自完整后续路径。
 app.get('/api/sessions/:code/lineage', (req, res) => {
+  const seed = db.prepare('SELECT task_code FROM sessions WHERE code = ?').get(req.params.code);
+  if (seed && seed.task_code) {
+    return res.status(409).json({
+      error: `该会话属于训练任务 ${seed.task_code}，任务会话不提供复盘对照入口`,
+      errorCode: 'TASK_FORK_FORBIDDEN',
+    });
+  }
   const result = loadLineage(db, req.params.code);
   if (!result.ok) return res.status(result.status).json({ error: result.error });
   res.json({ ok: true, rootCode: result.rootCode, requestedCode: result.requestedCode, tree: result.tree });
@@ -434,6 +461,147 @@ app.get('/api/scenarios/:id/versions/:version/coverage', (req, res) => {
     });
   }
   res.json(result.report);
+});
+
+// ---------- 训练任务（培训师建任务、学员单人演练） ----------
+
+// 建立训练任务（培训师）：
+// {scenarioId, version?, deadline|deadlineMs, maxAttempts, passScore, trainees:[姓名…]}
+// 截止时间必须晚于当前时间；maxAttempts 为正整数；passScore 为整数；
+// trainees 非空且姓名（去首尾空白）不重复。任何非法配置整次拒绝，不生成任务与凭证。
+// 成功返回任务码、管理凭证与每名学员独立的参与凭证。
+app.post('/api/tasks', (req, res) => {
+  const result = taskOps.createTask(db, req.body || {});
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      errors: result.errors || undefined,
+    });
+  }
+  res.status(201).json({
+    ok: true,
+    code: result.task.code,
+    hostToken: result.hostToken, // 管理凭证，仅此处完整返回
+    scenarioId: result.task.scenario_id,
+    scenarioTitle: result.scenarioTitle,
+    version: result.task.version,
+    deadlineMs: result.task.deadline_ms,
+    deadlineAt: new Date(result.task.deadline_ms).toISOString(),
+    maxAttempts: result.task.max_attempts,
+    passScore: result.task.pass_score,
+    trainees: result.trainees.map((t) => ({ name: t.name, token: t.token })), // 各人独立参与凭证
+    note: '任务已绑定所选冻结版本，后续发布新版本不改变本任务规则；请把各学员的个人参与凭证分别、保密地发给本人。',
+  });
+});
+
+// 最近训练任务列表（不含任何凭证；供页面展示与进入）
+app.get('/api/tasks', (req, res) => {
+  res.json(taskOps.listTasks(db));
+});
+
+// 学员凭个人参与凭证查看自己的任务与尝试概况
+app.get('/api/tasks/my', (req, res) => {
+  const token = req.query.token || req.get('x-task-token');
+  if (!token) return res.status(400).json({ error: '缺少 token（个人参与凭证）' });
+  const result = taskOps.getMyTask(db, String(token));
+  if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
+  res.json({ ok: true, ...result.view });
+});
+
+// 培训师凭管理凭证查看各人尝试记录与成绩（?hostToken=…）
+app.get('/api/tasks/:code/report', (req, res) => {
+  const hostToken = req.query.hostToken || req.get('x-task-host-token');
+  if (!hostToken) return res.status(400).json({ error: '缺少 hostToken（管理凭证）' });
+  const result = taskOps.getTaskReport(db, { code: req.params.code, hostToken: String(hostToken) });
+  if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
+  res.json({ ok: true, ...result.report });
+});
+
+// 开始或续做尝试：{token}。有进行中尝试时返回原会话（不扣次数）；
+// 截止后不能开新尝试（旧尝试仍可经 attempts 入口续做）；次数耗尽拒绝。
+app.post('/api/tasks/attempts/start', (req, res) => {
+  const { token } = req.body || {};
+  if (typeof token !== 'string' || !token) {
+    return res.status(400).json({ error: '缺少 token（个人参与凭证）' });
+  }
+  const result = taskOps.startAttempt(db, token);
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      view: result.view || null,
+      ...(result.used !== undefined ? { used: result.used, maxAttempts: result.maxAttempts } : {}),
+    });
+  }
+  res.status(result.created ? 201 : 200).json({
+    ok: true,
+    created: result.created,
+    resumed: result.resumed,
+    attemptNo: result.attemptNo,
+    sessionCode: result.sessionCode,
+    scenarioTitle: result.view.scenarioTitle,
+    ...result.snapshot,
+    lastMove: null,
+    task: result.view,
+  });
+});
+
+// 查看某次尝试会话：{token, attemptNo?}（省略 attemptNo 取进行中尝试）
+app.post('/api/tasks/attempts/get', (req, res) => {
+  const { token, attemptNo } = req.body || {};
+  if (typeof token !== 'string' || !token) {
+    return res.status(400).json({ error: '缺少 token（个人参与凭证）' });
+  }
+  const result = taskOps.getAttempt(db, token, attemptNo);
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      view: result.view || null,
+    });
+  }
+  res.json({
+    ok: true,
+    attemptNo: result.attemptNo,
+    attemptStatus: result.attemptStatus,
+    scenarioTitle: result.view.scenarioTitle,
+    ...result.snapshot,
+    task: result.view,
+  });
+});
+
+// 在某次尝试中执行一步：{token, attemptNo, optionId, stepNo}。
+// 截止后仍可续做旧会话；步号/条件/选项校验完全沿用冻结版本规则；
+// 到结局时该尝试结束并消耗一次名额，之后才能开始下一次。
+app.post('/api/tasks/attempts/move', (req, res) => {
+  const { token, attemptNo, optionId, stepNo } = req.body || {};
+  if (typeof token !== 'string' || !token) {
+    return res.status(400).json({ error: '缺少 token（个人参与凭证）' });
+  }
+  if (!Number.isInteger(attemptNo)) {
+    return res.status(400).json({ error: '缺少或非法的 attemptNo（必须为 ≥1 的整数）' });
+  }
+  if (typeof optionId !== 'string') return res.status(400).json({ error: '缺少 optionId' });
+  if (!Number.isInteger(stepNo)) return res.status(400).json({ error: '缺少或非法的 stepNo（必须为整数）' });
+  const result = taskOps.moveAttempt(db, { token, attemptNo, optionId, stepNo });
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      current: result.current || null,
+      view: result.view || null,
+    });
+  }
+  res.json({
+    ok: true,
+    attemptNo: result.attemptNo,
+    ended: result.ended,
+    scenarioTitle: result.view.scenarioTitle,
+    ...result.snapshot,
+    lastMove: result.lastMove,
+    task: result.view,
+  });
 });
 
 // ---------- 共识演练房间（多人投票推进同一条会话路径） ----------

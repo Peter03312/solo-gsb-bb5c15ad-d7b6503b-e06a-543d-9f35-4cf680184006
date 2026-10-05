@@ -117,8 +117,10 @@ function computeTotalScore(content, pathRows) {
  *       选项属于当前节点、条件满足。任何不满足都不推进。
  * 房间会话（room_code 非空）属于共识演练，必须经“成员投票 + 主持人结算”推进；
  * 仅房间结算内部调用时传 allowRoomSession: true 放行。
+ * 任务会话（task_code 非空）属于训练任务，必须凭学员个人参与凭证经任务入口推进
+ * （受次数/截止控制）；仅任务内部调用时传 allowTaskSession: true 放行。
  */
-function performMove(db, { code, optionId, stepNo, traineeName, allowRoomSession = false }) {
+function performMove(db, { code, optionId, stepNo, traineeName, allowRoomSession = false, allowTaskSession = false }) {
   const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(code);
   if (!session) {
     return { ok: false, status: 404, errorCode: 'SESSION_NOT_FOUND', error: '会话不存在' };
@@ -142,6 +144,10 @@ function performMove(db, { code, optionId, stepNo, traineeName, allowRoomSession
   if (session.room_code && !allowRoomSession) {
     return fail(409, 'ROOM_SOLO_MOVE_FORBIDDEN',
       `该会话属于共识演练房间 ${session.room_code}，须由成员投票、主持人结算推进，不能经单人选择入口操作（未推进）`);
+  }
+  if (session.task_code && !allowTaskSession) {
+    return fail(409, 'TASK_SOLO_MOVE_FORBIDDEN',
+      `该会话属于训练任务 ${session.task_code}，须由任务学员凭个人参与凭证经任务入口操作（受尝试次数与截止时间限制），不能经普通单人选择入口推进（未推进）`);
   }
   if (session.status !== 'active') {
     return fail(409, 'SESSION_ENDED', '该会话已结束，不能继续选择');
@@ -244,6 +250,12 @@ function forkSession(db, params) {
     sourceCurrent: { code: source.code, stepNo: source.step_no },
     current: buildSnapshot(content, source, source.scenario_id, source.version),
   });
+
+  // 任务会话受任务的权限/次数/截止控制，不允许经复盘分叉另开普通会话绕过
+  if (source.task_code) {
+    return reject(409, 'TASK_FORK_FORBIDDEN',
+      `源会话属于训练任务 ${source.task_code}，不能复盘分叉（任务会话只能由对应学员凭个人参与凭证在任务内操作），未创建分支`);
+  }
 
   // 所见源当前步号必须与服务端一致（防过期页面/并发后基于旧局面分叉）
   if (!Number.isInteger(observedStepNo) || observedStepNo !== source.step_no) {

@@ -121,6 +121,58 @@ function initSchema() {
     PRIMARY KEY (room_code, step_no)
   );
 
+  -- 训练任务：培训师选定「已发布冻结版本 + 截止时间 + 每人最多尝试次数 + 及格分 + 学员名单」
+  -- 建立的单人演练任务。任务绑定 (scenario_id, version) 冻结版本，后续发布不改变本场规则。
+  -- 截止后不能开新尝试，但已开始（未结束）的尝试仍可继续操作到结局。
+  CREATE TABLE IF NOT EXISTS training_tasks (
+    code            TEXT PRIMARY KEY,        -- 任务码（10 位）
+    host_token      TEXT NOT NULL UNIQUE,    -- 管理凭证（培训师查看尝试记录/成绩）
+    scenario_id     TEXT NOT NULL,
+    version         INTEGER NOT NULL,        -- 创建任务时选定的已发布冻结版本
+    deadline_ms     INTEGER NOT NULL,        -- 截止时间（epoch 毫秒，必须晚于创建时刻）
+    max_attempts    INTEGER NOT NULL,        -- 每人最多尝试次数（正整数）
+    pass_score      INTEGER NOT NULL,        -- 及格分（整数）
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (scenario_id, version) REFERENCES versions(scenario_id, version) ON DELETE RESTRICT
+  );
+
+  -- 任务学员名单：每人一条，持有独立参与凭证；同一任务内姓名唯一（不区分首尾空格）。
+  CREATE TABLE IF NOT EXISTS task_trainees (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_code       TEXT NOT NULL REFERENCES training_tasks(code) ON DELETE CASCADE,
+    token           TEXT NOT NULL UNIQUE,    -- 个人参与凭证（开始/续做/查看本人尝试时出示）
+    name            TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (task_code, name)
+  );
+
+  -- 任务尝试：每人的每次尝试一行，尝试与一条独立的普通单人会话绑定。
+  -- status: active（进行中；截止后仍可继续操作）/ ended（已到结局，消耗一次名额）。
+  -- (task_code, trainee_id, attempt_no) 唯一；
+  -- 部分唯一索引 idx_task_active_attempt 保证同一人至多一条 active 尝试
+  -- （重复“开始”返回原会话，且并发重复开始不会多建会话/多扣次数）。
+  CREATE TABLE IF NOT EXISTS task_attempts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_code       TEXT NOT NULL REFERENCES training_tasks(code) ON DELETE CASCADE,
+    trainee_id      INTEGER NOT NULL REFERENCES task_trainees(id) ON DELETE CASCADE,
+    attempt_no      INTEGER NOT NULL,        -- 该学员在本任务中的第几次尝试（从 1 起）
+    session_code    TEXT NOT NULL UNIQUE REFERENCES sessions(code) ON DELETE RESTRICT,
+    status          TEXT NOT NULL DEFAULT 'active',
+    started_ms      INTEGER NOT NULL,
+    ended_ms        INTEGER,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (task_code, trainee_id, attempt_no)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_task_trainees_task ON task_trainees(task_code);
+  CREATE INDEX IF NOT EXISTS idx_task_attempts_trainee ON task_attempts(task_code, trainee_id);
+  CREATE INDEX IF NOT EXISTS idx_task_attempts_session ON task_attempts(session_code);
+  -- 同一学员同一任务至多一条进行中的尝试（SQLite 部分唯一索引；并发重复开始靠它兜底）
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_task_active_attempt
+    ON task_attempts(task_code, trainee_id) WHERE status = 'active';
+
   CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_code);
   CREATE INDEX IF NOT EXISTS idx_room_votes_room ON room_votes(room_code, step_no);
   CREATE INDEX IF NOT EXISTS idx_room_steps_open ON room_steps(room_code, status, deadline_ms);
@@ -136,6 +188,9 @@ function initSchema() {
   addColumn('root_code', 'root_code TEXT');
   // 共识演练：房间绑定的共享会话打上 room_code 标记，单人选择入口据此拒绝绕过投票
   addColumn('room_code', 'room_code TEXT');
+  // 训练任务：任务尝试创建的单人会话打上 task_code 标记，普通会话入口（列表/查询/
+  // 推进/分叉）据此拒绝绕过任务的凭证、次数与截止控制；只能凭个人参与凭证操作。
+  addColumn('task_code', 'task_code TEXT');
   // 限时模式：房间每步时长（秒）；NULL 为旧用法（不限时）。结算留痕补充结算方式。
   const roomCols = db.prepare('PRAGMA table_info(rooms)').all();
   if (!roomCols.some((c) => c.name === 'step_duration')) {
@@ -154,6 +209,7 @@ function initSchema() {
   db.exec(`UPDATE sessions SET root_code = code WHERE root_code IS NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_root ON sessions(root_code)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_room ON sessions(room_code)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_code)`);
 }
 
 function newId(prefix) {
