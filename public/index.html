@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>事故处置情境编排与演练</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🚒 事故处置情境编排台</div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="trainee">学员演练</button>
+      <button class="tab" data-tab="rooms">共识演练</button>
+      <button class="tab" data-tab="trainer">培训师编排</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ 学员视图 ============ -->
+    <section id="view-trainee">
+      <div id="trainee-home">
+        <div class="section-head">
+          <h2>可演练情境</h2>
+          <button class="btn ghost" id="btn-reload-published">刷新</button>
+        </div>
+        <div id="published-list" class="card-grid"></div>
+
+        <h2 class="mt">继续已有演练 / 复盘分叉</h2>
+        <div class="muted" style="margin:-6px 0 10px">培训师可凭会话码打开任意会话（含已结局），在会话页右侧「复盘分叉」中选择历史步创建分支；分支沿用冻结版本，原会话不变。</div>
+        <div class="inline-row">
+          <input id="trainee-name" class="input" placeholder="学员姓名（可选，仅开始新演练时记录）" maxlength="100" />
+        </div>
+        <div class="inline-row mt" style="margin-top:8px">
+          <input id="resume-code" class="input" placeholder="输入会话码（10 位）" maxlength="10" />
+          <button class="btn" id="btn-resume">继续</button>
+        </div>
+        <div id="session-list" class="mt"></div>
+      </div>
+
+      <div id="trainee-session" hidden>
+        <div class="session-bar">
+          <div>
+            <div class="muted" id="ses-scenario-title"></div>
+            <div class="ses-meta">
+              会话码 <code id="ses-code"></code>
+              · 冻结版本 <b id="ses-version"></b>
+              · 当前第 <b id="ses-step">0</b> 步
+              · 累计得分 <b id="ses-score">0</b>
+              <span id="ses-lineage"></span>
+            </div>
+          </div>
+          <button class="btn ghost" id="btn-exit-session">返回列表</button>
+        </div>
+
+        <div id="ses-banner" class="banner hidden"></div>
+
+        <div class="session-grid">
+          <div class="col-main">
+            <div class="card" id="node-card">
+              <div class="node-kick" id="node-kick"></div>
+              <h3 id="node-title"></h3>
+              <p class="narrative" id="node-narrative"></p>
+            </div>
+            <div class="card">
+              <h4>你的选择</h4>
+              <div id="option-list"></div>
+            </div>
+          </div>
+          <div class="col-side">
+            <div class="card">
+              <h4>现场状态</h4>
+              <div id="state-list"></div>
+            </div>
+            <div class="card">
+              <h4>已走路径</h4>
+              <ol id="path-list" class="path-list"></ol>
+            </div>
+            <div class="card fork-card">
+              <h4>🌿 复盘分叉（培训师）</h4>
+              <p class="hint">从本会话某个历史步创建可继续选择的分支。分支沿用当前冻结版本，保留分歧步之前的路径与现场状态；原会话与其它分支不变。结局步不可分叉。</p>
+              <div class="field">
+                <label>分歧步号（从第 0 步起）</label>
+                <select id="fork-step-select" class="input sm"></select>
+              </div>
+              <input id="fork-name" class="input sm" maxlength="100" placeholder="分支备注名（可选）" style="margin:6px 0" />
+              <button class="btn primary" id="btn-fork" style="width:100%">从此步创建分支</button>
+            </div>
+            <div class="card">
+              <h4>来源与分支对照</h4>
+              <div id="lineage-box"><div class="muted">加载中…</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 共识演练（房间投票） ============ -->
+    <section id="view-rooms" hidden>
+      <div id="rooms-home">
+        <div class="rooms-grid">
+          <div class="card">
+            <h4>🎬 开启共识演练（培训师）</h4>
+            <p class="hint">选定已发布的冻结版本开启房间，取得学员加入码与主持凭证；后续发布新版本不改变本场规则。</p>
+            <div class="field">
+              <label>已发布情境</label>
+              <select id="room-scenario" class="input"></select>
+            </div>
+            <div class="field">
+              <label>冻结版本</label>
+              <select id="room-version" class="input sm"></select>
+            </div>
+            <div class="field timed-field">
+              <label class="checkbox">
+                <input type="checkbox" id="room-timed-toggle" />
+                <b>限时模式</b>（每步统一倒计时；到点有票自动多数决结算，零票暂停待主持人重开）
+              </label>
+              <div class="timed-duration-row" id="room-duration-row" hidden>
+                <label>每步时长（秒，30～3600）</label>
+                <input id="room-step-duration" class="input sm" type="number" min="30" max="3600" step="1" value="120" />
+                <span class="muted">截止前可改票或由主持人提前结算；每步从实际推进时刻开始计时。</span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="checkbox">
+                <input type="checkbox" id="room-blind-toggle" />
+                <b>🔒 盲投模式</b>（当前步结算前仅公开已投人数，不显示各选项票数与逐人选项；学员凭成员凭证仍可查看/修改自己的票；结算后公布各选项票数与获胜处置，永不公开姓名对应；创建后不可更改）
+              </label>
+            </div>
+            <button class="btn primary" id="btn-create-room" style="width:100%">开启房间</button>
+            <div id="room-created" class="room-created hidden">
+              <div>学员加入码：<code id="room-join-out" class="big-code"></code></div>
+              <div>主持凭证：<code id="room-host-out" class="big-code"></code></div>
+              <div class="hint">主持凭证仅此处完整展示，请妥善保存；学员只需加入码。</div>
+              <button class="btn" id="btn-enter-host" style="width:100%;margin-top:6px">以主持人身份进入本场</button>
+            </div>
+          </div>
+          <div class="card">
+            <h4>🙋 学员加入</h4>
+            <p class="hint">凭培训师公布的加入码加入房间，取得自己的成员凭证后即可对当前步投票；结算前可改票，每人每步只计最后一票。</p>
+            <div class="field"><input id="join-code" class="input" placeholder="加入码（10 位）" maxlength="10" /></div>
+            <div class="field"><input id="join-name" class="input" placeholder="姓名（可选）" maxlength="100" /></div>
+            <button class="btn primary" id="btn-join-room" style="width:100%">加入房间</button>
+          </div>
+          <div class="card">
+            <h4>🎤 主持人进入</h4>
+            <p class="hint">凭房间码与主持凭证进入主持台：查看逐人投票明细，并在到齐后携所见步号结算。</p>
+            <div class="field"><input id="host-code" class="input" placeholder="房间码（加入码）" maxlength="10" /></div>
+            <div class="field"><input id="host-token" class="input" placeholder="主持凭证" /></div>
+            <button class="btn" id="btn-enter-host-manual" style="width:100%">进入主持台</button>
+          </div>
+        </div>
+        <div class="section-head mt">
+          <h2>最近房间</h2>
+          <button class="btn ghost" id="btn-reload-rooms">刷新</button>
+        </div>
+        <div id="room-list"></div>
+      </div>
+
+      <div id="room-view" hidden>
+        <div class="session-bar">
+          <div>
+            <div class="muted" id="room-scenario-title"></div>
+            <div class="ses-meta">
+              房间 <code id="room-code"></code>
+              · 冻结版本 <b id="room-version"></b>
+              · 当前第 <b id="room-step">0</b> 步
+              · 累计得分 <b id="room-score">0</b>
+              · 成员 <b id="room-members">0</b> 人
+              · 本步已投 <b id="room-votes">0</b> 票
+              <span id="room-role"></span>
+            </div>
+            <div id="room-blind-bar" class="blind-bar hidden"></div>
+            <div id="room-timer-bar" class="timer-bar hidden"></div>
+          </div>
+          <button class="btn ghost" id="btn-exit-room">返回列表</button>
+        </div>
+
+        <div id="room-banner" class="banner hidden"></div>
+
+        <div class="session-grid">
+          <div class="col-main">
+            <div class="card">
+              <div class="node-kick" id="room-node-kick"></div>
+              <h3 id="room-node-title"></h3>
+              <p class="narrative" id="room-node-narrative"></p>
+            </div>
+            <div class="card">
+              <h4>本步处置投票</h4>
+              <div id="room-option-list"></div>
+              <div id="room-host-panel" hidden>
+                <hr class="sep" />
+                <h4>🎤 主持台</h4>
+                <div id="room-vote-detail"></div>
+                <div class="host-actions">
+                  <button class="btn primary" id="btn-settle">立即结算本步（按票数推进）</button>
+                  <button class="btn" id="btn-reopen" hidden>⏱️ 重开本步（给完整时长）</button>
+                </div>
+                <p class="hint">票数最多的选项推进同一条会话路径；同票按冻结版本的选项编排顺序决定；无人投票不能结算。限时房间到点后系统会自动结算（有票）或暂停（零票），暂停时可用“重开本步”。</p>
+              </div>
+            </div>
+          </div>
+          <div class="col-side">
+            <div class="card">
+              <h4>现场状态</h4>
+              <div id="room-state-list"></div>
+            </div>
+            <div class="card">
+              <h4>已结算路径</h4>
+              <ol id="room-path-list" class="path-list"></ol>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 培训师视图 ============ -->
+    <section id="view-trainer" hidden>
+      <div id="trainer-home">
+        <div class="section-head">
+          <h2>我的情境</h2>
+          <button class="btn primary" id="btn-new-scenario">＋ 新建情境</button>
+        </div>
+        <div id="scenario-list" class="card-grid"></div>
+      </div>
+
+      <div id="trainer-coverage" hidden>
+        <div class="editor-bar">
+          <button class="btn ghost" id="btn-coverage-back">← 返回情境列表</button>
+          <div class="editor-title-wrap">
+            <div id="coverage-title" style="font-size:16px;font-weight:600"></div>
+            <span class="muted" id="coverage-sub"></span>
+          </div>
+          <div class="editor-actions">
+            <label class="start-pick">冻结版本
+              <select id="coverage-version" class="input sm"></select>
+            </label>
+            <button class="btn" id="btn-coverage-reload">刷新报告</button>
+          </div>
+        </div>
+        <div id="coverage-summary"></div>
+        <div class="card">
+          <div class="card-head">
+            <h4>覆盖项明细（进入时现场状态 × 节点 × 可选选项）</h4>
+            <label class="checkbox"><input type="checkbox" id="coverage-filter-uncovered" /> 只看未覆盖项</label>
+          </div>
+          <p class="hint">统计口径：仅按绑定本冻结版本的会话“已完成选择”统计；同一家族的原始会话与多级分支对同一覆盖项至多计一次（继承前缀不重复累计）；进行中会话只计已完成步骤；其它版本不混入。</p>
+          <div id="coverage-items"></div>
+        </div>
+      </div>
+
+      <div id="trainer-editor" hidden>
+        <div class="editor-bar">
+          <button class="btn ghost" id="btn-back-list">← 返回列表</button>
+          <div class="editor-title-wrap">
+            <input id="editor-title" class="input title-input" placeholder="情境标题" />
+            <span class="muted" id="editor-version-label"></span>
+          </div>
+          <div class="editor-actions">
+            <button class="btn" id="btn-analyze">发布前检查</button>
+            <button class="btn" id="btn-coverage-from-editor">处置覆盖报告</button>
+            <button class="btn" id="btn-save-draft">保存草稿</button>
+            <button class="btn primary" id="btn-publish">发布新版本</button>
+          </div>
+        </div>
+
+        <div id="editor-report" class="report hidden"></div>
+
+        <div class="editor-grid">
+          <div class="col-main">
+            <div class="card">
+              <div class="card-head">
+                <h4>情境节点</h4>
+                <label class="start-pick">起点
+                  <select id="start-select" class="input sm"></select>
+                </label>
+              </div>
+              <div id="node-editor-list"></div>
+              <button class="btn dashed" id="btn-add-node">＋ 添加节点</button>
+            </div>
+          </div>
+          <div class="col-side">
+            <div class="card">
+              <h4>现场状态（布尔，至多 8 个）</h4>
+              <div id="state-editor-list"></div>
+              <button class="btn dashed" id="btn-add-state">＋ 添加状态</button>
+              <p class="hint">选项可以“要求某状态为是/否”作为条件，并在选择后把状态“置为是/否”。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

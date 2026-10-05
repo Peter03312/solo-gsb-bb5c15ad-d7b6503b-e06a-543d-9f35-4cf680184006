@@ -1,0 +1,24 @@
+services:
+  incident-trainer:
+    build: .
+    image: incident-scenario-trainer:latest
+    container_name: incident-scenario-trainer
+    restart: unless-stopped
+    ports:
+      # 宿主机端口:容器端口；修改宿主机端口只需改左侧（也可用环境变量 PORT 覆盖）
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      # 容器内监听端口（一般无需修改；改后需与上面右侧端口保持一致）
+      PORT: "8080"
+      # SQLite 数据库文件位置（位于持久化卷内）
+      DB_PATH: /app/data/app.db
+      TZ: Asia/Shanghai
+    volumes:
+      # 持久化数据库：情境草稿、已冻结版本、演练会话都保存在此
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 8s
